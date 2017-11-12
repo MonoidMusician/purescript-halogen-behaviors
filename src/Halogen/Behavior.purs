@@ -5,7 +5,7 @@ import Prelude
 import Control.Monad.Aff.Class (class MonadAff)
 import Control.Monad.Eff (Eff)
 import Control.Monad.Eff.AVar (AVAR)
-import Control.Monad.Eff.Ref (REF, Ref, newRef, readRef, writeRef)
+import Control.Monad.Eff.Ref (REF, Ref, modifyRef, newRef, readRef)
 import Control.Monad.Except (runExcept)
 import Control.Monad.Maybe.Trans (MaybeT(..), runMaybeT)
 import Control.MonadZero (guard)
@@ -20,7 +20,7 @@ import Data.Foreign (toForeign, typeOf)
 import Data.Function.Uncurried as Fn
 import Data.Int (even, round)
 import Data.Maybe (Maybe(..))
-import Data.Record (delete, get, insert)
+import Data.Record (delete, get, insert, set)
 import Data.Set (size)
 import Data.String (joinWith)
 import Data.Symbol (class IsSymbol, SProxy(..), reflectSymbol)
@@ -41,54 +41,30 @@ import Halogen.HTML.Properties (IProp(..))
 import Halogen.HTML.Properties as HP
 import Halogen.Query.EventSource (eventSource')
 import Halogen.VDom.DOM.Prop (Prop(..), PropValue)
-import Halogen.VDom.DOM.Prop as HVP
 import Halogen.VDom.Driver (runUI)
 import Halogen.VDom.Util as Util
-import Type.Row (class RowLacks, class RowToList, Cons, Nil, RLProxy(..), kind RowList)
+import Type.Row (class ListToRow, class RowLacks, class RowToList, Cons, Nil, RLProxy(..), kind RowList)
 import Unsafe.Coerce (unsafeCoerce)
 import Unsafe.Reference (unsafeRefEq)
 
-newtype AProp (s :: Symbol) = AProperty PropValue
-instance eqAProp :: Eq (AProp s) where
-  eq (AProperty v1) (AProperty v2) = unsafeRefEq v1 v2
-
-fromIProp ::
-  forall s t one.
-    IsSymbol s =>
-    RowToList one (Cons s t Nil) =>
-  IProp one Void -> Maybe (AProp s)
-fromIProp (IProp (Property p v))
-  | p == reflectSymbol (SProxy :: SProxy s)
-  = Just (AProperty v)
-fromIProp _ = Nothing
-
-toIProp ::
-  forall s o r.
-    IsSymbol s =>
-  AProp s -> IProp r o
-toIProp (AProperty v) = IProp (Property p v)
-  where p = reflectSymbol (SProxy :: SProxy s)
-
-type State prop s =
+type State partial s =
   { value :: s
-  , ref :: Maybe (Ref (Maybe (AProp prop)))
-  , latest :: Maybe (AProp prop)
+  , as :: AroundState partial
   }
-initialState :: forall one s. s -> State one s
+initialState :: forall partial s. Nothings partial => s -> State partial s
 initialState =
   { value: _
-  , ref: Nothing
-  , latest: Nothing
+  , as: uninitializedAS
   }
 
-data Query prop s o a
+data Query partial s o a
   = Initialize a
   | Finalize a
   | Receive s a
   | Lift o a
-  | UpdateProp (Maybe (AProp prop)) a
+  | UpdateProp (Variant partial) a
 
-class MultiAttrBehavior
+class Nothings partial <= MultiAttrBehavior
   (allowed :: # Type) -- IsProp p => p
   (partial :: # Type) -- Maybe p
   (behaviors :: # Type) -- Behavior (Maybe p)
@@ -97,14 +73,20 @@ class MultiAttrBehavior
   where
     subscribe :: forall eff. Record behaviors -> (Variant partial -> Eff (frp :: FRP | eff) Unit) -> Eff (frp :: FRP | eff) (Eff (frp :: FRP | eff) Unit)
     handle :: forall e. Element -> Variant partial -> Eff ( dom :: DOM | e ) Unit
+    toProps :: forall i. Record partial -> Array (IProp allowed i)
+    shouldUpdate :: forall e. Ref (Record partial) -> Variant partial -> Eff ( ref :: REF | e ) Boolean
 instance mab ::
-  ( RowToList partial rl
+  ( RowToList allowed rl
+  , ListToRow rl allowed
+  , Nothings partial
   , MultiAttrBehaviorRL rl allowed partial behaviors
   ) => MultiAttrBehavior allowed partial behaviors where
     subscribe = subscribeRL (RLProxy :: RLProxy rl)
     handle = handleRL (RLProxy :: RLProxy rl)
+    toProps = toPropsRL (RLProxy :: RLProxy rl)
+    shouldUpdate = shouldUpdateRL (RLProxy :: RLProxy rl)
 
-class MultiAttrBehaviorRL
+class (Nothings partial, RowToList allowed rl, ListToRow rl allowed) <= MultiAttrBehaviorRL
   (rl :: RowList)
   (allowed :: # Type) -- IsProp p => p
   (partial :: # Type) -- Maybe p
@@ -113,9 +95,13 @@ class MultiAttrBehaviorRL
   where
     subscribeRL :: forall eff. RLProxy rl -> Record behaviors -> (Variant partial -> Eff (frp :: FRP | eff) Unit) -> Eff (frp :: FRP | eff) (Eff (frp :: FRP | eff) Unit)
     handleRL :: forall e. RLProxy rl -> Element -> Variant partial -> Eff ( dom :: DOM | e ) Unit
+    toPropsRL :: forall i. RLProxy rl -> Record partial -> Array (IProp allowed i)
+    shouldUpdateRL :: forall e. RLProxy rl -> Ref (Record partial) -> Variant partial -> Eff ( ref :: REF | e ) Boolean
 instance mabNil :: MultiAttrBehaviorRL Nil () () () where
   subscribeRL _ {} cb = pure (pure unit)
   handleRL _ _ = case_
+  toPropsRL _ {} = []
+  shouldUpdateRL _ _ = case_
 instance mabCons ::
   ( IsSymbol label
   , IsProp p
@@ -126,6 +112,9 @@ instance mabCons ::
   , RowCons label (Maybe p) partial' partial
   , RowCons label (Behavior (Maybe p)) behaviors' behaviors
   , Union partial' one partial
+  , RowToList allowed (Cons label p rl)
+  , ListToRow (Cons label p rl) allowed
+  , Nothings partial
   , MultiAttrBehaviorRL rl allowed' partial' behaviors'
   ) => MultiAttrBehaviorRL (Cons label p rl) allowed partial behaviors where
     subscribeRL _ r cb = do
@@ -135,9 +124,27 @@ instance mabCons ::
       where k = SProxy :: SProxy label
     handleRL _ el = handleRL (RLProxy :: RLProxy rl) el
       # on k case _ of
-        Just e -> Fn.runFn3 setProperty (reflectSymbol k) (toPropValue e) el
+        Just v -> Fn.runFn3 setProperty (reflectSymbol k) (toPropValue v) el
         Nothing -> Fn.runFn2 removeProperty (reflectSymbol k) el
       where k = (SProxy :: SProxy label)
+    toPropsRL _ r = case get k r of
+      Nothing -> other
+      Just v -> other <> [IProp (Property (reflectSymbol k) (toPropValue v))]
+      where
+        k = (SProxy :: SProxy label)
+        exp = unsafeCoerce :: (forall i. Array (IProp allowed' i) -> Array (IProp allowed i))
+        other = exp $ toPropsRL (RLProxy :: RLProxy rl) (delete k r)
+    shouldUpdateRL _ ref = handleOther # on k handleThis
+      where
+        k = (SProxy :: SProxy label)
+        handleThis = \v -> do
+          rec <- readRef ref
+          if get k rec `eqMProp` v
+            then pure false
+            else do
+              modifyRef ref (set k v)
+              pure true
+        handleOther = unsafeCoerce (shouldUpdateRL (RLProxy :: RLProxy rl)) ref
 
 -- allow mutation in ref?
 newtype AroundState partial = AroundState
@@ -169,9 +176,9 @@ eqMProp _ _ = false
 
 class Nothings (row :: # Type) where
   aWholeLotOfNothing :: Record row
-class (RowToList row rl) <= NothingsRL (rl :: RowList) (row :: # Type) | rl -> row where
+class (RowToList row rl, ListToRow rl row) <= NothingsRL (rl :: RowList) (row :: # Type) | rl -> row where
   aWholeLotOfNothingRL :: RLProxy rl -> Record row
-instance nothingsImpl :: (RowToList row rl, NothingsRL rl row) => Nothings row where
+instance nothingsImpl :: (RowToList row rl, ListToRow rl row, NothingsRL rl row) => Nothings row where
   aWholeLotOfNothing = aWholeLotOfNothingRL (RLProxy :: RLProxy rl)
 instance nothingsNil :: NothingsRL Nil () where
   aWholeLotOfNothingRL _ = {}
@@ -185,22 +192,25 @@ instance nothingsCons ::
     aWholeLotOfNothingRL _ = insert (SProxy :: SProxy label) Nothing
       (aWholeLotOfNothingRL (RLProxy :: RLProxy rl) :: Record row')
 
-behavioralComponent ::
-  forall m r s o v prop eff other.
+behavioralComponentRL ::
+  forall m r s o v required partial behaviors eff other rl partialrl.
     MonadAff ( dom :: DOM, frp :: FRP, ref :: REF, avar :: AVAR | eff ) m =>
-    IsSymbol prop =>
-    RowCons prop v other r =>
+    MultiAttrBehaviorRL rl required partial behaviors =>
+    Union required other r =>
+    NothingsRL partialrl partial =>
+  RLProxy rl ->
+  RLProxy partialrl ->
   HH.Node r Void o ->
   (
     (Array (HH.IProp other o) -> Array (HH.HTML Void o) -> HH.HTML Void o) ->
     s ->
     HH.HTML Void o
   ) ->
-  Behavior (Maybe (AProp prop)) ->
-  H.Component HH.HTML (Query prop s o) s o m
-behavioralComponent node renderWith behavior =
+  Record behaviors ->
+  H.Component HH.HTML (Query partial s o) s o m
+behavioralComponentRL _ _ node renderWith behavior =
   H.lifecycleComponent
-    { initialState
+    { initialState: init
     , receiver: HE.input Receive
     , initializer: HE.input_ Initialize unit
     , finalizer: HE.input_ Initialize unit
@@ -208,43 +218,42 @@ behavioralComponent node renderWith behavior =
     , eval
     }
   where
+    init :: s -> State partial s
+    init s =
+      { value: s
+      , as: AroundState { insideState: aWholeLotOfNothingRL (RLProxy :: RLProxy partialrl), outsideState: Nothing }
+      }
     label = RefLabel "behavioral-component"
     addRefProps = ([HP.ref label] <> _)
     propName = reflectSymbol (SProxy :: SProxy "style")
-    expand = unsafeCoerce :: (Array (HH.IProp other o) -> Array (HH.IProp r o))
+    expand1 = unsafeCoerce :: (Array (HH.IProp other o) -> Array (HH.IProp r o))
+    expand2 = unsafeCoerce :: (Array (HH.IProp required o) -> Array (HH.IProp r o))
 
     -- Render the component. Delegates to the passed in renderer,
     -- lifts all communication from it.
-    render :: State prop s -> H.HTML Void (Query prop s o)
-    render { value, latest } = (Lift <@> unit) <$>
+    render :: State partial s -> H.HTML Void (Query partial s o)
+    render { value, as: (AroundState { insideState: latest }) } = (Lift <@> unit) <$>
       let
-        props = addRefProps case latest of
-          Nothing -> []
-          Just attr -> [toIProp attr]
-        renderer attrs = node (expand attrs <> props)
+        props = toProps latest
+        renderer attrs = node (expand1 attrs <> expand2 props)
       in renderWith renderer value
 
-    eval :: Query prop s o ~> H.HalogenM (State prop s) (Query prop s o) (Const Void) Void o m
+    eval :: Query partial s o ~> H.HalogenM (State partial s) (Query partial s o) (Const Void) Void o m
     -- Initialize the component.
     eval (Initialize a) = a <$ do
       -- Run the canceller, just in case ....
       eval (Finalize unit)
       -- Create a ref from the latest style
-      style <- H.gets _.latest
-      ref <- H.liftEff $ newRef style
+      as <- H.gets _.as >>= initialize >>> H.liftEff
       -- And store the ref and canceller in state!
-      H.modify (_ { ref = Just ref })
+      H.modify (_ { as = as })
       -- Start animating the behavior
-      H.subscribe $ eventSource' (animate behavior)
+      H.subscribe $ eventSource' (subscribeRL (RLProxy :: RLProxy rl) behavior)
         (Just <<< (UpdateProp <@> H.Listening))
     -- Update for a new input for the renderer.
-    eval (Receive s a) = a <$ runMaybeT do
-      -- Get the reference
-      ref <- MaybeT $ H.gets _.ref
-      -- Every time we update we need to snapshot the reference
-      -- so the latest is available in render
-      snapshot <- H.liftEff $ readRef ref
-      H.modify (_ { value = s, latest = snapshot })
+    eval (Receive s a) = a <$ do
+      as <- H.gets _.as >>= snapshot >>> H.liftEff
+      H.modify (_ { value = s, as = as })
     -- Destroy the component.
     eval (Finalize a) = pure a
     -- Raise a query from the HTML to this component's output.
@@ -253,16 +262,12 @@ behavioralComponent node renderWith behavior =
     -- Secretely set the style directly on the element, update the reference.
     -- Should *not* write to state.
     eval (UpdateProp mprop a) = a <$ runMaybeT do
-      ref <- MaybeT $ H.gets _.ref
-      prev <- H.liftEff $ readRef ref
-      guard (mprop /= prev)
+      ref <- MaybeT $ H.gets \{as: AroundState { outsideState }} -> outsideState
+      shouldupdate <- H.liftEff $ shouldUpdateRL (RLProxy :: RLProxy rl) ref mprop
+      guard shouldupdate
       -- Set the style directly on the DOM element
       el <- htmlElementToElement <$> MaybeT (H.getHTMLElementRef label)
-      H.liftEff case mprop of
-        Nothing -> Fn.runFn2 removeProperty propName el
-        Just (AProperty p) -> Fn.runFn3 setProperty propName p el
-      -- Update the reference with this style
-      H.liftEff $ writeRef ref mprop
+      H.liftEff $ handleRL (RLProxy :: RLProxy rl) el mprop
 
 setProperty ∷ ∀ eff. Fn.Fn3 String PropValue Element (Eff (dom ∷ DOM | eff) Unit)
 setProperty = Util.unsafeSetAny
@@ -287,11 +292,11 @@ main = runHalogenAff $ awaitBody >>= runUI parent unit
       [ "color: " <> coleur
       , "font-style: " <> italicite
       ]
-    styleProp :: String -> AProp "style"
-    styleProp = HVP.propFromString >>> AProperty
-    b = (combine <$> colorName <*> italic) <#> styleProp >>> pure
+    b = {style: map Just $ combine <$> colorName <*> italic}
     help = "Hold a mouse button down anywhere on the page to make this text italic!"
-    component' = behavioralComponent HH.div <@> b $ \el t ->
+    rl = RLProxy :: RLProxy (Cons "style" String Nil)
+    partialrl = RLProxy :: RLProxy (Cons "style" (Maybe String) Nil)
+    component' = behavioralComponentRL rl partialrl HH.div <@> b $ \el t ->
       el [] [ HH.h1_ [ HH.text t ] ]
     parent = H.parentComponent
       { render: \v ->
