@@ -20,10 +20,12 @@ import Data.Foreign (toForeign, typeOf)
 import Data.Function.Uncurried as Fn
 import Data.Int (even, round)
 import Data.Maybe (Maybe(..))
+import Data.Record (delete, get, insert)
 import Data.Set (size)
 import Data.String (joinWith)
 import Data.Symbol (class IsSymbol, SProxy(..), reflectSymbol)
 import Data.Tuple (Tuple(..))
+import Data.Variant (Variant, case_, expand, inj, on)
 import FRP (FRP)
 import FRP.Behavior (Behavior, animate)
 import FRP.Behavior.Mouse (buttons)
@@ -31,7 +33,9 @@ import FRP.Behavior.Time (seconds)
 import Halogen (RefLabel(..))
 import Halogen as H
 import Halogen.Aff (awaitBody, runHalogenAff)
+import Halogen.HTML (class IsProp)
 import Halogen.HTML as HH
+import Halogen.HTML.Core (toPropValue)
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties (IProp(..))
 import Halogen.HTML.Properties as HP
@@ -40,7 +44,7 @@ import Halogen.VDom.DOM.Prop (Prop(..), PropValue)
 import Halogen.VDom.DOM.Prop as HVP
 import Halogen.VDom.Driver (runUI)
 import Halogen.VDom.Util as Util
-import Type.Row (class RowToList, Cons, Nil)
+import Type.Row (class RowLacks, class RowToList, Cons, Nil, RLProxy(..), kind RowList)
 import Unsafe.Coerce (unsafeCoerce)
 import Unsafe.Reference (unsafeRefEq)
 
@@ -83,6 +87,103 @@ data Query prop s o a
   | Receive s a
   | Lift o a
   | UpdateProp (Maybe (AProp prop)) a
+
+class MultiAttrBehavior
+  (allowed :: # Type) -- IsProp p => p
+  (partial :: # Type) -- Maybe p
+  (behaviors :: # Type) -- Behavior (Maybe p)
+  | allowed -> partial behaviors
+  , partial -> allowed behaviors
+  where
+    subscribe :: forall eff. Record behaviors -> (Variant partial -> Eff (frp :: FRP | eff) Unit) -> Eff (frp :: FRP | eff) (Eff (frp :: FRP | eff) Unit)
+    handle :: forall e. Element -> Variant partial -> Eff ( dom :: DOM | e ) Unit
+instance mab ::
+  ( RowToList partial rl
+  , MultiAttrBehaviorRL rl allowed partial behaviors
+  ) => MultiAttrBehavior allowed partial behaviors where
+    subscribe = subscribeRL (RLProxy :: RLProxy rl)
+    handle = handleRL (RLProxy :: RLProxy rl)
+
+class MultiAttrBehaviorRL
+  (rl :: RowList)
+  (allowed :: # Type) -- IsProp p => p
+  (partial :: # Type) -- Maybe p
+  (behaviors :: # Type) -- Behavior (Maybe p)
+  | rl -> allowed partial behaviors
+  where
+    subscribeRL :: forall eff. RLProxy rl -> Record behaviors -> (Variant partial -> Eff (frp :: FRP | eff) Unit) -> Eff (frp :: FRP | eff) (Eff (frp :: FRP | eff) Unit)
+    handleRL :: forall e. RLProxy rl -> Element -> Variant partial -> Eff ( dom :: DOM | e ) Unit
+instance mabNil :: MultiAttrBehaviorRL Nil () () () where
+  subscribeRL _ {} cb = pure (pure unit)
+  handleRL _ _ = case_
+instance mabCons ::
+  ( IsSymbol label
+  , IsProp p
+  , RowLacks label allowed'
+  , RowLacks label partial'
+  , RowLacks label behaviors'
+  , RowCons label p allowed' allowed
+  , RowCons label (Maybe p) partial' partial
+  , RowCons label (Behavior (Maybe p)) behaviors' behaviors
+  , Union partial' one partial
+  , MultiAttrBehaviorRL rl allowed' partial' behaviors'
+  ) => MultiAttrBehaviorRL (Cons label p rl) allowed partial behaviors where
+    subscribeRL _ r cb = do
+      c1 <- subscribeRL (RLProxy :: RLProxy rl) (delete k r) (expand >>> cb)
+      c2 <- animate (get k r) (inj k >>> cb)
+      pure (c1 *> c2)
+      where k = SProxy :: SProxy label
+    handleRL _ el = handleRL (RLProxy :: RLProxy rl) el
+      # on k case _ of
+        Just e -> Fn.runFn3 setProperty (reflectSymbol k) (toPropValue e) el
+        Nothing -> Fn.runFn2 removeProperty (reflectSymbol k) el
+      where k = (SProxy :: SProxy label)
+
+-- allow mutation in ref?
+newtype AroundState partial = AroundState
+  { insideState :: Record partial
+  , outsideState :: Maybe (Ref (Record partial))
+  }
+
+uninitializedAS :: forall partial. Nothings partial => AroundState partial
+uninitializedAS = AroundState { insideState: aWholeLotOfNothing, outsideState: Nothing }
+
+initialize :: forall partial eff. AroundState partial -> Eff ( ref :: REF | eff ) (AroundState partial)
+initialize (AroundState { insideState }) =
+  newRef insideState <#>
+    AroundState <<< { insideState, outsideState: _ } <<< Just
+
+snapshot :: forall partial eff. AroundState partial -> Eff ( ref :: REF | eff ) (AroundState partial)
+snapshot a@(AroundState { outsideState: Nothing }) = pure a
+snapshot (AroundState { outsideState: Just ref }) =
+  readRef ref <#> \insideState ->
+    AroundState { insideState, outsideState: Just ref }
+
+eqProp :: forall p. IsProp p => p -> p -> Boolean
+eqProp a b = unsafeRefEq (toPropValue a) (toPropValue b)
+
+eqMProp :: forall p. IsProp p => Maybe p -> Maybe p -> Boolean
+eqMProp (Just p1) (Just p2) = eqProp p1 p2
+eqMProp Nothing Nothing = true
+eqMProp _ _ = false
+
+class Nothings (row :: # Type) where
+  aWholeLotOfNothing :: Record row
+class (RowToList row rl) <= NothingsRL (rl :: RowList) (row :: # Type) | rl -> row where
+  aWholeLotOfNothingRL :: RLProxy rl -> Record row
+instance nothingsImpl :: (RowToList row rl, NothingsRL rl row) => Nothings row where
+  aWholeLotOfNothing = aWholeLotOfNothingRL (RLProxy :: RLProxy rl)
+instance nothingsNil :: NothingsRL Nil () where
+  aWholeLotOfNothingRL _ = {}
+instance nothingsCons ::
+  ( IsSymbol label
+  , RowCons label (Maybe ty) row' row
+  , RowLacks label row'
+  , RowToList row (Cons label (Maybe ty) rl)
+  , NothingsRL rl row'
+  ) => NothingsRL (Cons label (Maybe ty) rl) row where
+    aWholeLotOfNothingRL _ = insert (SProxy :: SProxy label) Nothing
+      (aWholeLotOfNothingRL (RLProxy :: RLProxy rl) :: Record row')
 
 behavioralComponent ::
   forall m r s o v prop eff other.
