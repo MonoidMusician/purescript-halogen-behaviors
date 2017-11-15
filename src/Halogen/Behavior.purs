@@ -6,18 +6,25 @@ import Control.Monad.Aff.Class (class MonadAff)
 import Control.Monad.Eff (Eff)
 import Control.Monad.Eff.AVar (AVAR)
 import Control.Monad.Eff.Ref (REF, Ref, modifyRef, newRef, readRef)
+import Control.Monad.Eff.Uncurried as EffFn
+import Control.Monad.Eff.Unsafe (unsafeCoerceEff)
 import Control.Monad.Except (runExcept)
 import Control.Monad.Maybe.Trans (MaybeT(..), runMaybeT)
+import Control.Monad.ST (ST)
 import Control.MonadZero (guard)
 import DOM (DOM)
 import DOM.Event.Event (target)
+import DOM.Event.Types (FocusEvent, MouseEvent)
 import DOM.HTML.HTMLInputElement (value)
 import DOM.HTML.Types (htmlElementToElement, readHTMLInputElement)
 import DOM.Node.Types (Element)
+import Data.Array.ST (emptySTArray, pokeSTArray, pushSTArray, unsafeFreeze)
 import Data.Const (Const)
-import Data.Foldable (for_)
+import Data.Either.Nested (Either2)
+import Data.Foldable (for_, traverse_)
 import Data.Foreign (toForeign, typeOf)
 import Data.Function.Uncurried as Fn
+import Data.Functor.Coproduct.Nested (Coproduct2)
 import Data.Int (even, round)
 import Data.Maybe (Maybe(..))
 import Data.Record (delete, get, insert, set)
@@ -27,14 +34,15 @@ import Data.Symbol (class IsSymbol, SProxy(..), reflectSymbol)
 import Data.Tuple (Tuple(..))
 import Data.Variant (Variant, case_, expand, inj, on)
 import FRP (FRP)
-import FRP.Behavior (ABehavior, Behavior, animate)
-import FRP.Behavior.Mouse (buttons)
+import FRP.Behavior (ABehavior, Behavior, animate, step)
 import FRP.Behavior.Keyboard (key)
+import FRP.Behavior.Mouse (buttons)
 import FRP.Behavior.Time (seconds)
 import FRP.Event (Event)
 import Halogen (RefLabel(..))
 import Halogen as H
 import Halogen.Aff (awaitBody, runHalogenAff)
+import Halogen.Component.ChildPath as CP
 import Halogen.HTML (class IsProp)
 import Halogen.HTML as HH
 import Halogen.HTML.Core (toPropValue)
@@ -52,11 +60,16 @@ import Unsafe.Reference (unsafeRefEq)
 type State partial i =
   { value :: i
   , as :: AroundState partial
+  , pushers :: Maybe
+    { focus :: Boolean -> Eff ( frp :: FRP ) Unit
+    , hover :: Boolean -> Eff ( frp :: FRP ) Unit
+    }
   }
 initialState :: forall partial i. Nothings partial => i -> State partial i
 initialState =
   { value: _
   , as: uninitializedAS
+  , pushers: Nothing
   }
 
 data Query partial i o a
@@ -65,31 +78,33 @@ data Query partial i o a
   | Receive i a
   | Lift o a
   | UpdateProp (Variant partial) a
+  | ChangeFocus Boolean a
+  | ChangeHover Boolean a
 
 type SubscribeCancel eff v = (v -> Eff eff Unit) -> Eff eff (Eff eff Unit)
 
 class Nothings partial <= MultiAttrBehavior
-  (allowed :: # Type) -- IsProp p => p
+  (required :: # Type) -- IsProp p => p
   (partial :: # Type) -- Maybe p
   (behaviors :: # Type) -- Behavior (Maybe p)
-  | allowed -> partial behaviors
-  , partial -> allowed behaviors
+  | required -> partial behaviors
+  , partial -> required behaviors
   where
     subscribe :: forall e. Record behaviors -> SubscribeCancel ( frp :: FRP | e ) (Variant partial)
     handle :: forall e. Element -> Variant partial -> Eff ( dom :: DOM | e ) Unit
-    toProps :: forall i. Record partial -> Array (IProp allowed i)
+    toProps :: forall i. Record partial -> Array (IProp required i)
     shouldUpdate :: forall e. Ref (Record partial) -> Variant partial -> Eff ( ref :: REF | e ) Boolean
 instance mab ::
   -- Use both RowToList and ListToRow for inference purposes
-  ( RowToList allowed arl
-  , ListToRow arl allowed
+  ( RowToList required arl
+  , ListToRow arl required
   , RowToList partial prl
   , ListToRow prl partial
   , RowToList behaviors brl
   , ListToRow brl behaviors
   , NothingsRL prl partial
-  , MultiAttrBehaviorRL arl prl brl allowed partial behaviors
-  ) => MultiAttrBehavior allowed partial behaviors where
+  , MultiAttrBehaviorRL arl prl brl required partial behaviors
+  ) => MultiAttrBehavior required partial behaviors where
     subscribe = subscribeRL (RLProxy :: RLProxy arl)
     handle = handleRL (RLProxy :: RLProxy arl)
     toProps = toPropsRL (RLProxy :: RLProxy arl)
@@ -97,16 +112,16 @@ instance mab ::
 
 class
   ( NothingsRL prl partial
-  , RowToList allowed arl, ListToRow arl allowed
+  , RowToList required arl, ListToRow arl required
   , RowToList behaviors brl -- , ListToRow brl behaviors
   ) <= MultiAttrBehaviorRL
   (arl :: RowList)
   (prl :: RowList)
   (brl :: RowList)
-  (allowed :: # Type) -- IsProp p => p
+  (required :: # Type) -- IsProp p => p
   (partial :: # Type) -- Maybe p
   (behaviors :: # Type) -- Behavior (Maybe p)
-  | arl -> allowed
+  | arl -> required
   , prl -> partial
   , brl -> behaviors
   , arl -> prl brl
@@ -115,7 +130,7 @@ class
   where
     subscribeRL :: forall e. RLProxy arl -> Record behaviors -> SubscribeCancel ( frp :: FRP | e ) (Variant partial)
     handleRL :: forall e. RLProxy arl -> Element -> Variant partial -> Eff ( dom :: DOM | e ) Unit
-    toPropsRL :: forall i. RLProxy arl -> Record partial -> Array (IProp allowed i)
+    toPropsRL :: forall i. RLProxy arl -> Record partial -> Array (IProp required i)
     shouldUpdateRL :: forall e. RLProxy arl -> Ref (Record partial) -> Variant partial -> Eff ( ref :: REF | e ) Boolean
 instance mabNil :: MultiAttrBehaviorRL Nil Nil Nil () () () where
   subscribeRL _ {} cb = pure (pure unit)
@@ -125,27 +140,27 @@ instance mabNil :: MultiAttrBehaviorRL Nil Nil Nil () () () where
 instance mabCons ::
   ( IsSymbol label
   , IsProp p
-  , RowLacks label allowed'
+  , RowLacks label required'
   , RowLacks label partial'
   , RowLacks label behaviors'
-  , RowCons label p allowed' allowed
+  , RowCons label p required' required
   , RowCons label (Maybe p) partial' partial
   , RowCons label (Behavior (Maybe p)) behaviors' behaviors
   , Union partial' one partial
-  , RowToList allowed (Cons label p arl)
-  -- , ListToRow (Cons label p arl) allowed
+  , RowToList required (Cons label p arl)
+  -- , ListToRow (Cons label p arl) required
   , RowToList partial (Cons label (Maybe p) prl)
   -- , ListToRow (Cons label (Maybe p) prl) partial
   , RowToList behaviors (Cons label (Behavior (Maybe p)) brl)
   -- , ListToRow (Cons label (Behavior (Maybe p)) brl) behaviors
   -- , Nothings partial
   -- , NothingsRL (Cons label (Maybe p) prl) partial
-  , MultiAttrBehaviorRL arl prl brl allowed' partial' behaviors'
+  , MultiAttrBehaviorRL arl prl brl required' partial' behaviors'
   ) => MultiAttrBehaviorRL
     (Cons label p arl)
     (Cons label (Maybe p) prl)
     (Cons label (ABehavior Event (Maybe p)) brl)
-    allowed partial behaviors where
+    required partial behaviors where
       subscribeRL _ r cb = do
         c1 <- subscribeRL (RLProxy :: RLProxy arl) (delete k r) (expand >>> cb)
         c2 <- animate (get k r) (inj k >>> cb)
@@ -166,7 +181,7 @@ instance mabCons ::
         Just v -> other <> [IProp (Property (reflectSymbol k) (toPropValue v))]
         where
           k = (SProxy :: SProxy label)
-          exp = unsafeCoerce :: (forall i. Array (IProp allowed' i) -> Array (IProp allowed i))
+          exp = unsafeCoerce :: (forall i. Array (IProp required' i) -> Array (IProp required i))
           other = exp $ toPropsRL (RLProxy :: RLProxy arl) (delete k r)
       shouldUpdateRL _ ref = handleOther # on k handleThis
         where
@@ -226,19 +241,67 @@ instance nothingsCons ::
     aWholeLotOfNothingRL _ = insert (SProxy :: SProxy label) Nothing
       (aWholeLotOfNothingRL (RLProxy :: RLProxy rl) :: Record row')
 
+subject :: forall a eff.
+  Eff ( frp :: FRP | eff )
+  { event :: Event a, push :: EffFn.EffFn1 ( frp :: FRP | eff ) a Unit }
+subject = unsafeCoerce subject'
+subject' :: forall a eff.
+  Eff ( frp :: FRP | eff )
+    { event ::
+        EffFn.EffFn1 ( frp :: FRP | eff )
+          (EffFn.EffFn1 ( frp :: FRP | eff ) a Unit)
+          (Eff ( frp :: FRP | eff ) Unit)
+    , push :: EffFn.EffFn1 ( frp :: FRP | eff ) a Unit
+    }
+subject' = do
+  subs <- noST emptySTArray
+  pure
+    { event: EffFn.mkEffFn1 \sub -> noST do
+        i <- pushSTArray subs sub
+        pure $ void $ noST do
+          pokeSTArray subs (i-1) noop
+    , push: EffFn.mkEffFn1 \a -> do
+        noST (unsafeFreeze subs) >>= traverse_ (EffFn.runEffFn1 <@> a)
+    }
+  where
+    noop = EffFn.mkEffFn1 (pure (pure unit))
+    -- Shh. You see nothing.
+    noST :: forall h e. Eff ( st :: ST h | e ) ~> Eff e
+    noST = unsafeCoerceEff
+
+type ExtraEvents allowed =
+  ( onMouseEnter :: MouseEvent
+  , onMouseLeave :: MouseEvent
+  , onFocus :: FocusEvent
+  , onBlur :: FocusEvent
+  | allowed
+  )
+
 behavioralComponent ::
   forall m allowed i o required partial behaviors eff other.
     MonadAff ( dom :: DOM, frp :: FRP, ref :: REF, avar :: AVAR | eff ) m =>
     MultiAttrBehavior required partial behaviors =>
-    Union required other allowed =>
+    Union required other (ExtraEvents allowed) =>
     Nothings partial =>
-  HH.Node allowed Void o ->
+  -- Warning: leaky abstraction
+  HH.Node (ExtraEvents allowed) Void (Query partial i o Unit) ->
   (
-    (Array (HH.IProp other o) -> Array (HH.HTML Void o) -> HH.HTML Void o) ->
+    -- Still leaking
+    (
+      Array (HH.IProp other o) ->
+      Array (HH.HTML Void o) ->
+      H.HTML Void (Query partial i o)
+    ) ->
     i ->
-    HH.HTML Void o
+    -- Leaked
+    H.HTML Void (Query partial i o)
   ) ->
-  Record behaviors ->
+  (
+    { focus :: Behavior Boolean
+    , hover :: Behavior Boolean
+    } ->
+    Record behaviors
+  ) ->
   H.Component HH.HTML (Query partial i o) i o m
 behavioralComponent node renderWith behavior =
   H.lifecycleComponent
@@ -252,29 +315,53 @@ behavioralComponent node renderWith behavior =
   where
     label = RefLabel "behavioral-component"
     addRefProps = ([HP.ref label] <> _)
-    expand1 = unsafeCoerce :: (Array (HH.IProp other o) -> Array (HH.IProp allowed o))
-    expand2 = unsafeCoerce :: (Array (HH.IProp required o) -> Array (HH.IProp allowed o))
+    expand1 = unsafeCoerce :: (Array (HH.IProp other o) -> Array (HH.IProp (ExtraEvents allowed) o))
+    expand2 = unsafeCoerce :: (Array (HH.IProp required o) -> Array (HH.IProp (ExtraEvents allowed) o))
 
     -- Render the component. Delegates to the passed in renderer,
     -- lifts all communication from it.
     render :: State partial i -> H.HTML Void (Query partial i o)
-    render { value, as: (AroundState { insideState: latest }) } = (Lift <@> unit) <$>
+    render { value, as: (AroundState { insideState: latest }), pushers } =
       let
+        events :: Array (H.IProp (ExtraEvents allowed) (Query partial i o))
+        events =
+          [ HE.onMouseEnter (HE.input_ (ChangeHover true))
+          , HE.onMouseLeave (HE.input_ (ChangeHover false))
+          , HE.onFocus (HE.input_ (ChangeFocus true))
+          , HE.onBlur (HE.input_ (ChangeFocus false))
+          ]
         props = addRefProps (toProps latest)
-        renderer attrs = node (expand1 attrs <> expand2 props)
+        lifting :: Array (HH.IProp (ExtraEvents allowed) o) -> Array (H.IProp (ExtraEvents allowed) (Query partial i o))
+        lifting = map (mapIProp (Lift <@> unit))
+          where mapIProp f (IProp p) = IProp (map f <$> p)
+        renderer attrs children =
+          node (events <> lifting (expand1 attrs <> expand2 props))
+          (map (Lift <@> unit) <$> children)
       in renderWith renderer value
 
     eval :: Query partial i o ~> H.HalogenM (State partial i) (Query partial i o) (Const Void) Void o m
     -- Initialize the component.
     eval (Initialize a) = a <$ do
-      -- Run the canceller, just in case ....
+      -- Run the finalizer, just in case ....
       eval (Finalize unit)
       -- Create a ref from the latest style
       as <- H.gets _.as >>= initialize >>> H.liftEff
-      -- And store the ref and canceller in state!
+      -- And store it in state!
       H.modify (_ { as = as })
+      focus <- H.liftEff $ subject
+      hover <- H.liftEff $ subject
+      let
+        pushers =
+          { focus: unsafeCoerceEff <<< EffFn.runEffFn1 focus.push
+          , hover: unsafeCoerceEff <<< EffFn.runEffFn1 hover.push
+          }
+        status =
+          { focus: step false focus.event
+          , hover: step false hover.event
+          }
+      H.modify (_ { pushers = Just pushers })
       -- Start animating the behavior
-      H.subscribe $ eventSource' (subscribe behavior)
+      H.subscribe $ eventSource' (subscribe (behavior status))
         (Just <<< (UpdateProp <@> H.Listening))
     -- Update for a new input for the renderer.
     eval (Receive s a) = a <$ do
@@ -294,6 +381,12 @@ behavioralComponent node renderWith behavior =
       shouldupdate <- H.liftEff $ shouldUpdate ref mprop
       guard shouldupdate
       H.liftEff $ handle el mprop
+    eval (ChangeFocus focused a) = a <$ runMaybeT do
+      push <- MaybeT $ H.gets _.pushers
+      H.liftEff (unsafeCoerceEff (push.focus focused))
+    eval (ChangeHover focused a) = a <$ runMaybeT do
+      push <- MaybeT $ H.gets _.pushers
+      H.liftEff (unsafeCoerceEff (push.hover focused))
 
 setProperty ∷ ∀ eff. Fn.Fn3 String PropValue Element (Eff (dom ∷ DOM | eff) Unit)
 setProperty = Util.unsafeSetAny
@@ -319,18 +412,26 @@ main = runHalogenAff $ awaitBody >>= runUI parent unit
       [ "color: " <> coleur
       , "font-style: " <> italicite
       ]
-    b =
+    b { focus, hover } =
       { "style": map Just $ combine <$> colorName <*> italic
       , "class": spacebar <#> if _ then Just "align-right" else Nothing
       }
     help = "Hold a mouse button down anywhere on the page to make this text italic!"
-    component' = behavioralComponent HH.div <@> b $ \el t ->
+    component1 = behavioralComponent HH.div <@> b $ \el t ->
       el [] [ HH.h1_ [ HH.text t ] ]
+    inputColor { focus, hover } = { style: _ } $ map Just $
+      (\f h -> "color: " <>
+        if f
+        then if h then "purple" else "blue"
+        else if h then "red" else "black"
+      ) <$> focus <*> hover
+    component2 = behavioralComponent (\a _ -> HH.input a) <@> inputColor $ \el v ->
+      el [ HP.value v, HE.onInput (HE.input Tuple) ] []
     parent = H.parentComponent
       { render: \v ->
         HH.div_
-          [ HH.input [ HP.value v, HE.onInput (HE.input Tuple) ]
-          , HH.slot unit component' v (absurd)
+          [ HH.slot' cp_cp2 unit component2 v pure
+          , HH.slot' CP.cp1 unit component1 v absurd
           ]
       , eval: \(Tuple e a) -> a <$ do
           for_ (runExcept $ target e # toForeign # readHTMLInputElement)
@@ -338,3 +439,6 @@ main = runHalogenAff $ awaitBody >>= runUI parent unit
       , initialState: const help
       , receiver: const Nothing
       }
+      where
+        -- Give a finite type to the slot
+        cp_cp2 = CP.cp2 :: forall f g a b. CP.ChildPath g (Coproduct2 f g) b (Either2 a b)
