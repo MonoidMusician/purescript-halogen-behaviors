@@ -20,6 +20,7 @@ import DOM.HTML.Types (htmlElementToElement, readHTMLInputElement)
 import DOM.Node.Types (Element)
 import Data.Array.ST (emptySTArray, pokeSTArray, pushSTArray, unsafeFreeze)
 import Data.Const (Const)
+import Data.Either (Either(..))
 import Data.Either.Nested (Either2)
 import Data.Foldable (for_, traverse_)
 import Data.Foreign (toForeign, typeOf)
@@ -28,13 +29,14 @@ import Data.Functor.Coproduct.Nested (Coproduct2)
 import Data.Int (even, round)
 import Data.Maybe (Maybe(..))
 import Data.Record (delete, get, insert, set)
+import Data.Record.Builder as B
 import Data.Set (size)
 import Data.String (joinWith)
 import Data.Symbol (class IsSymbol, SProxy(..), reflectSymbol)
 import Data.Tuple (Tuple(..))
-import Data.Variant (Variant, case_, expand, inj, on)
+import Data.Variant (class VariantMatchCases, Variant, case_, expand, inj, on)
 import FRP (FRP)
-import FRP.Behavior (ABehavior, Behavior, animate, step)
+import FRP.Behavior (ABehavior, Behavior, animate, step, unfold)
 import FRP.Behavior.Keyboard (key)
 import FRP.Behavior.Mouse (buttons)
 import FRP.Behavior.Time (seconds)
@@ -53,33 +55,218 @@ import Halogen.Query.EventSource (eventSource')
 import Halogen.VDom.DOM.Prop (Prop(..), PropValue)
 import Halogen.VDom.Driver (runUI)
 import Halogen.VDom.Util as Util
-import Type.Row (class ListToRow, class RowLacks, class RowToList, Cons, Nil, RLProxy(..), kind RowList)
+import Type.Row (class ListToRow, class RowLacks, class RowToList, Cons, Nil, RLProxy(..), RProxy(..), kind RowList)
 import Unsafe.Coerce (unsafeCoerce)
 import Unsafe.Reference (unsafeRefEq)
 
-type State partial i =
+expandAttr ::
+  forall attrs attrs' extra.
+    Union attrs extra attrs' =>
+  IProp attrs ~> IProp attrs'
+expandAttr = unsafeCoerce
+
+expandAttrs ::
+  forall attrs attrs' extra a.
+    Union attrs extra attrs' =>
+  Array (IProp attrs a) -> Array (IProp attrs' a)
+expandAttrs = unsafeCoerce
+
+class ElementBehaviors
+  (attrs :: # Type)
+  (behaviors :: # Type) -- Behavior t
+  (callbacks :: # Type) -- t -> Eff ( frp :: FRP )
+  (internals :: # Type) -- t
+  | behaviors -> callbacks internals
+  where
+    mkBehaviors :: forall e. RProxy attrs -> Eff ( frp :: FRP | e )
+      (Tuple (Record behaviors) (Record callbacks))
+    update :: forall e.
+      RProxy behaviors ->
+      RProxy attrs ->
+      Record callbacks ->
+      Variant internals ->
+      Eff ( frp :: FRP | e ) Unit
+    allAttrs :: RProxy behaviors -> Array (IProp attrs (Variant internals))
+
+instance elementBehaviors ::
+  ( RowToList behaviors rl
+  , ElementBehaviorsRL attrs rl behaviors callbacks internals
+  ) => ElementBehaviors attrs   behaviors callbacks internals
+  where
+    mkBehaviors r = initializeRL (RLProxy :: RLProxy rl) r <#>
+      \(Tuple b cb) -> Tuple (B.build b {}) (B.build cb {})
+    update _ r cbs = updateRL (RLProxy :: RLProxy rl) r (mkDeletor cbs)
+    allAttrs _ = attrsRL (RLProxy :: RLProxy rl)
+
+newtype Deletor r = Deletor (Record r)
+mkDeletor :: forall r. Record r -> Deletor r
+mkDeletor = Deletor
+
+split :: forall s t r' r. IsSymbol s => RowCons s t r' r => RowLacks s r' =>
+  SProxy s -> Deletor r -> Tuple t (Deletor r')
+split k d@(Deletor r) = Tuple (get k r) (unsafeCoerce d)
+
+mapIProp :: forall attrs a b. (a -> b) -> IProp attrs a -> IProp attrs b
+mapIProp f (IProp p) = IProp (map f <$> p)
+
+class ElementBehaviorsRL
+  (attrs :: # Type)
+  (rl :: RowList)
+  (behaviors :: # Type) -- Behavior t
+  (callbacks :: # Type) -- t -> Eff ( frp :: FRP )
+  (internals :: # Type) -- t
+  | rl -> behaviors callbacks internals
+  where
+    initializeRL :: forall e.
+      RLProxy rl ->
+      RProxy attrs ->
+      Eff ( frp :: FRP | e )
+        (Tuple
+          (B.Builder {} { | behaviors })
+          (B.Builder {} { | callbacks })
+        )
+    updateRL :: forall e.
+      RLProxy rl ->
+      RProxy attrs ->
+      Deletor callbacks ->
+      Variant internals ->
+      Eff ( frp :: FRP | e ) Unit
+    attrsRL ::
+      RLProxy rl ->
+      Array (IProp attrs (Variant internals))
+
+instance elementBehaviorsNil ::
+  ElementBehaviorsRL attrs Nil () () ()
+  where
+    initializeRL _ _ = pure (Tuple id id)
+    updateRL _ _ _ v = case_ v
+    attrsRL _ = []
+
+instance elementBehaviorsCons ::
+  ( ElementBehavior attrs' s t i
+  , Union attrs' unused attrs
+  , RowCons s (Behavior t) behaviors' behaviors
+  , RowCons s (i -> Eff ( frp :: FRP ) Unit) callbacks' callbacks
+  , RowCons s i internals' internals
+  , RowLacks s behaviors'
+  , RowLacks s callbacks'
+  , RowLacks s internals'
+  , RowToList behaviors (Cons s (ABehavior Event t) rl)
+  , ListToRow (Cons s (ABehavior Event t) rl) behaviors
+  , Union internals' whymustwehavethis internals
+  , RowToList callbacks crl
+  , VariantMatchCases crl internals (Eff ( frp :: FRP ) Unit)
+  , ElementBehaviorsRL attrs rl behaviors' callbacks' internals'
+  ) => ElementBehaviorsRL attrs
+    (Cons s (ABehavior Event t) rl)
+    behaviors callbacks internals
+  where
+    initializeRL _ r = do
+      Tuple b' cb' <- initializeRL (RLProxy :: RLProxy rl) r
+      { event, push: cb } <- subject
+      let b = process s event
+      pure $ Tuple
+        (b' >>> B.insert s b)
+        (cb' >>> B.insert s (unsafeCoerce (EffFn.runEffFn1 cb)))
+      where s = SProxy :: SProxy s
+    updateRL _ r cbs =
+      on s (unsafeCoerce cb) $
+        updateRL (RLProxy :: RLProxy rl) r cbs'
+      where
+        s = SProxy :: SProxy s
+        Tuple cb cbs' = split s cbs
+    attrsRL _ = (mapIProp expand <$> attrsRL (RLProxy :: RLProxy rl)) <> expandAttrs (attrs s q)
+      where
+        s = SProxy :: SProxy s
+        q :: i -> (forall e. e -> Maybe (Variant internals))
+        q v = \_ -> pure (inj s v)
+
+class IsSymbol name <= ElementBehavior
+  (attrs :: # Type)
+  (name :: Symbol)
+  (value :: Type)
+  (internal :: Type)
+  | name -> attrs value internal
+  where
+    process :: SProxy name -> Event internal -> Behavior value
+    attrs :: forall q.
+      SProxy name ->
+      (internal -> (forall e. e -> Maybe q)) ->
+      Array (IProp attrs q)
+
+instance focusElementBehavior ::
+  ElementBehavior
+    ( onFocus :: FocusEvent, onBlur :: FocusEvent )
+    "focus"
+    Boolean
+    Boolean
+  where
+    process _ = step false
+    attrs _ q =
+      [ HE.onFocus (q true)
+      , HE.onBlur (q false)
+      ]
+
+instance hoverElementBehavior ::
+  ElementBehavior
+    ( onMouseOver :: MouseEvent, onMouseOut :: MouseEvent )
+    "hover"
+    Boolean
+    Boolean
+  where
+    process _ = step false
+    attrs _ q =
+      [ HE.onMouseOver (q true)
+      , HE.onMouseOut (q false)
+      ]
+
+data PreciseFocus
+  = HereFocused
+  | ChildFocused
+  | Unfocused
+
+instance preciseFocusElementBehavior ::
+  ElementBehavior
+    ( onFocus :: FocusEvent, onBlur :: FocusEvent
+    , onFocusIn :: FocusEvent, onFocusOut :: FocusEvent
+    )
+    "preciseFocus"
+    PreciseFocus
+    (Either Boolean Boolean)
+  where
+    process _ e = unfold next e (Tuple false false) <#> case _ of
+      Tuple true _ -> HereFocused
+      Tuple _ true -> ChildFocused
+      Tuple false false -> Unfocused
+      where
+        next (Left h)  (Tuple _ c) = Tuple h c
+        next (Right c) (Tuple h _) = Tuple h c
+    attrs _ q =
+      [ HE.onFocus $ q $ Left true
+      , HE.onBlur $ q $ Left false
+      , HE.onFocusIn $ q $ Right true
+      , HE.onFocusOut $ q $ Right false
+      ]
+
+type State callbacks partial i =
   { value :: i
   , as :: AroundState partial
-  , pushers :: Maybe
-    { focus :: Boolean -> Eff ( frp :: FRP ) Unit
-    , hover :: Boolean -> Eff ( frp :: FRP ) Unit
-    }
+  , pushers :: Maybe (Record callbacks)
   }
-initialState :: forall partial i. Nothings partial => i -> State partial i
+initialState :: forall callbacks partial i. Nothings partial => i -> State callbacks partial i
 initialState =
   { value: _
   , as: uninitializedAS
   , pushers: Nothing
   }
 
-data Query partial i o a
+data Query internals partial i o a
   = Initialize a
   | Finalize a
   | Receive i a
   | Lift o a
   | UpdateProp (Variant partial) a
-  | ChangeFocus Boolean a
-  | ChangeHover Boolean a
+  | UpdateBehavior (Variant internals) a
 
 type SubscribeCancel eff v = (v -> Eff eff Unit) -> Eff eff (Eff eff Unit)
 
@@ -269,40 +456,33 @@ subject' = do
     noST :: forall h e. Eff ( st :: ST h | e ) ~> Eff e
     noST = unsafeCoerceEff
 
-type ExtraEvents allowed =
-  ( onMouseEnter :: MouseEvent
-  , onMouseLeave :: MouseEvent
-  , onFocus :: FocusEvent
-  , onBlur :: FocusEvent
-  | allowed
-  )
-
 behavioralComponent ::
-  forall m allowed i o required partial behaviors eff other.
+  forall m all i o required partial behaviors eff ebehaviors callbacks internals other rl.
     MonadAff ( dom :: DOM, frp :: FRP, ref :: REF, avar :: AVAR | eff ) m =>
     MultiAttrBehavior required partial behaviors =>
-    Union required other (ExtraEvents allowed) =>
+    -- ElementBehaviors all ebehaviors callbacks internals =>
+    RowToList ebehaviors rl =>
+    ElementBehaviorsRL all rl ebehaviors callbacks internals =>
+    Union required other all =>
     Nothings partial =>
   -- Warning: leaky abstraction
-  HH.Node (ExtraEvents allowed) Void (Query partial i o Unit) ->
+  HH.Node (all) Void (Query internals partial i o Unit) ->
   (
     -- Still leaking
     (
       Array (HH.IProp other o) ->
       Array (HH.HTML Void o) ->
-      H.HTML Void (Query partial i o)
+      H.HTML Void (Query internals partial i o)
     ) ->
     i ->
     -- Leaked
-    H.HTML Void (Query partial i o)
+    H.HTML Void (Query internals partial i o)
   ) ->
   (
-    { focus :: Behavior Boolean
-    , hover :: Behavior Boolean
-    } ->
+    Record ebehaviors ->
     Record behaviors
   ) ->
-  H.Component HH.HTML (Query partial i o) i o m
+  H.Component HH.HTML (Query internals partial i o) i o m
 behavioralComponent node renderWith behavior =
   H.lifecycleComponent
     { initialState
@@ -315,31 +495,25 @@ behavioralComponent node renderWith behavior =
   where
     label = RefLabel "behavioral-component"
     addRefProps = ([HP.ref label] <> _)
-    expand1 = unsafeCoerce :: (Array (HH.IProp other o) -> Array (HH.IProp (ExtraEvents allowed) o))
-    expand2 = unsafeCoerce :: (Array (HH.IProp required o) -> Array (HH.IProp (ExtraEvents allowed) o))
+    expand1 = unsafeCoerce :: (Array (HH.IProp other o) -> Array (HH.IProp (all) o))
+    expand2 = unsafeCoerce :: (Array (HH.IProp required o) -> Array (HH.IProp (all) o))
+    events :: Array (H.IProp (all) (Query internals partial i o))
+    events = mapIProp (UpdateBehavior <@> unit) <$> attrsRL (RLProxy :: RLProxy rl)
+    lifting :: Array (HH.IProp (all) o) -> Array (H.IProp (all) (Query internals partial i o))
+    lifting = map (mapIProp (Lift <@> unit))
 
     -- Render the component. Delegates to the passed in renderer,
     -- lifts all communication from it.
-    render :: State partial i -> H.HTML Void (Query partial i o)
+    render :: State callbacks partial i -> H.HTML Void (Query internals partial i o)
     render { value, as: (AroundState { insideState: latest }), pushers } =
       let
-        events :: Array (H.IProp (ExtraEvents allowed) (Query partial i o))
-        events =
-          [ HE.onMouseEnter (HE.input_ (ChangeHover true))
-          , HE.onMouseLeave (HE.input_ (ChangeHover false))
-          , HE.onFocus (HE.input_ (ChangeFocus true))
-          , HE.onBlur (HE.input_ (ChangeFocus false))
-          ]
         props = addRefProps (toProps latest)
-        lifting :: Array (HH.IProp (ExtraEvents allowed) o) -> Array (H.IProp (ExtraEvents allowed) (Query partial i o))
-        lifting = map (mapIProp (Lift <@> unit))
-          where mapIProp f (IProp p) = IProp (map f <$> p)
         renderer attrs children =
           node (events <> lifting (expand1 attrs <> expand2 props))
           (map (Lift <@> unit) <$> children)
       in renderWith renderer value
 
-    eval :: Query partial i o ~> H.HalogenM (State partial i) (Query partial i o) (Const Void) Void o m
+    eval :: Query internals partial i o ~> H.HalogenM (State callbacks partial i) (Query internals partial i o) (Const Void) Void o m
     -- Initialize the component.
     eval (Initialize a) = a <$ do
       -- Run the finalizer, just in case ....
@@ -348,17 +522,7 @@ behavioralComponent node renderWith behavior =
       as <- H.gets _.as >>= initialize >>> H.liftEff
       -- And store it in state!
       H.modify (_ { as = as })
-      focus <- H.liftEff $ subject
-      hover <- H.liftEff $ subject
-      let
-        pushers =
-          { focus: unsafeCoerceEff <<< EffFn.runEffFn1 focus.push
-          , hover: unsafeCoerceEff <<< EffFn.runEffFn1 hover.push
-          }
-        status =
-          { focus: step false focus.event
-          , hover: step false hover.event
-          }
+      Tuple status pushers <- H.liftEff $ mkBehaviors (RProxy :: RProxy all)
       H.modify (_ { pushers = Just pushers })
       -- Start animating the behavior
       H.subscribe $ eventSource' (subscribe (behavior status))
@@ -381,12 +545,9 @@ behavioralComponent node renderWith behavior =
       shouldupdate <- H.liftEff $ shouldUpdate ref mprop
       guard shouldupdate
       H.liftEff $ handle el mprop
-    eval (ChangeFocus focused a) = a <$ runMaybeT do
-      push <- MaybeT $ H.gets _.pushers
-      H.liftEff (unsafeCoerceEff (push.focus focused))
-    eval (ChangeHover focused a) = a <$ runMaybeT do
-      push <- MaybeT $ H.gets _.pushers
-      H.liftEff (unsafeCoerceEff (push.hover focused))
+    eval (UpdateBehavior which a) = a <$ runMaybeT do
+      pushers <- MaybeT $ H.gets _.pushers
+      H.liftEff $ update (RProxy :: RProxy ebehaviors) (RProxy :: RProxy all) pushers which
 
 setProperty ∷ ∀ eff. Fn.Fn3 String PropValue Element (Eff (dom ∷ DOM | eff) Unit)
 setProperty = Util.unsafeSetAny
@@ -412,6 +573,7 @@ main = runHalogenAff $ awaitBody >>= runUI parent unit
       [ "color: " <> coleur
       , "font-style: " <> italicite
       ]
+    b :: { focus :: Behavior Boolean, hover :: Behavior Boolean } -> { "style" :: Behavior (Maybe String), "class" :: Behavior (Maybe String) }
     b { focus, hover } =
       { "style": map Just $ combine <$> colorName <*> italic
       , "class": spacebar <#> if _ then Just "align-right" else Nothing
@@ -419,6 +581,7 @@ main = runHalogenAff $ awaitBody >>= runUI parent unit
     help = "Hold a mouse button down anywhere on the page to make this text italic!"
     component1 = behavioralComponent HH.div <@> b $ \el t ->
       el [] [ HH.h1_ [ HH.text t ] ]
+    inputColor :: { focus :: Behavior Boolean, hover :: Behavior Boolean } -> { style :: Behavior (Maybe String) }
     inputColor { focus, hover } = { style: _ } $ map Just $
       (\f h -> "color: " <>
         if f
