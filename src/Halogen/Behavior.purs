@@ -248,6 +248,34 @@ instance preciseFocusElementBehavior ::
       , HE.onFocusOut $ q $ Right false
       ]
 
+data Precise
+  = Here
+  | Child
+  | None
+
+instance preciseHoverElementBehavior ::
+  ElementBehavior
+    ( onMouseOver :: MouseEvent, onMouseOut :: MouseEvent
+    , onMouseEnter :: MouseEvent, onMouseLeave :: MouseEvent
+    )
+    "preciseHover"
+    Precise
+    (Either Boolean Boolean)
+  where
+    process _ e = unfold next e (Tuple false false) <#> case _ of
+      Tuple _ true -> Child
+      Tuple true _ -> Here
+      Tuple false false -> None
+      where
+        next (Left h)  (Tuple _ c) = Tuple h c
+        next (Right c) (Tuple h _) = Tuple h c
+    attrs _ q =
+      [ HE.onMouseOver $ q $ Left true
+      , HE.onMouseOut $ q $ Left false
+      , HE.onMouseEnter $ q $ Right true
+      , HE.onMouseLeave $ q $ Right false
+      ]
+
 type State callbacks partial i =
   { value :: i
   , as :: AroundState partial
@@ -569,18 +597,21 @@ main = runHalogenAff $ awaitBody >>= runUI parent unit
     spacebar = key 32
     colorName = blink <#> if _ then "orange" else "rebeccapurple"
     italic = pressed <#> if _ then "italic" else "normal"
-    combine coleur italicite = joinWith "; "
+    combine focusedWhere coleur italicite = joinWith "; " $
       [ "color: " <> coleur
       , "font-style: " <> italicite
-      ]
-    b :: { focus :: Behavior Boolean, hover :: Behavior Boolean } -> { "style" :: Behavior (Maybe String), "class" :: Behavior (Maybe String) }
-    b { focus, hover } =
-      { "style": map Just $ combine <$> colorName <*> italic
+      ] <> case focusedWhere of
+        Here -> [ "font-weight: normal" ]
+        Child -> [ "font-decoration: underline" ]
+        None -> [ "text-transform: capitalize" ]
+    b :: { preciseHover :: Behavior Precise, hover :: Behavior Boolean } -> { "style" :: Behavior (Maybe String), "class" :: Behavior (Maybe String) }
+    b { preciseHover, hover } =
+      { "style": map Just $ combine <$> preciseHover <*> colorName <*> italic
       , "class": spacebar <#> if _ then Just "align-right" else Nothing
       }
     help = "Hold a mouse button down anywhere on the page to make this text italic!"
-    component1 = behavioralComponent HH.div <@> b $ \el t ->
-      el [] [ HH.h1_ [ HH.text t ] ]
+    component1 = behavioralComponent HH.h1 <@> b $ \el t ->
+      el [] [ HH.text t, HH.span_ [ HH.text " my span" ] ]
     inputColor :: { focus :: Behavior Boolean, hover :: Behavior Boolean } -> { style :: Behavior (Maybe String) }
     inputColor { focus, hover } = { style: _ } $ map Just $
       (\f h -> "color: " <>

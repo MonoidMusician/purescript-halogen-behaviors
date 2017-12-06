@@ -41050,6 +41050,27 @@ var Unfocused = (function () {
     Unfocused.value = new Unfocused();
     return Unfocused;
 })();
+var Here = (function () {
+    function Here() {
+
+    };
+    Here.value = new Here();
+    return Here;
+})();
+var Child = (function () {
+    function Child() {
+
+    };
+    Child.value = new Child();
+    return Child;
+})();
+var None = (function () {
+    function None() {
+
+    };
+    None.value = new None();
+    return None;
+})();
 var Deletor = function (x) {
     return x;
 };
@@ -41156,7 +41177,7 @@ var snapshot = function (v) {
             };
         });
     };
-    throw new Error("Failed pattern match at Halogen.Behavior line 399, column 1 - line 399, column 102: " + [ v.constructor.name ]);
+    throw new Error("Failed pattern match at Halogen.Behavior line 427, column 1 - line 427, column 102: " + [ v.constructor.name ]);
 };
 var shouldUpdateRL = function (dict) {
     return dict.shouldUpdateRL;
@@ -41175,6 +41196,41 @@ var removeProperty = function (key, el) {
 var process = function (dict) {
     return dict.process;
 };
+var preciseHoverElementBehavior = new ElementBehavior(function () {
+    return new Data_Symbol.IsSymbol(function () {
+        return "preciseHover";
+    });
+}, function (v) {
+    return function (q) {
+        return [ Halogen_HTML_Events.onMouseOver(q(new Data_Either.Left(true))), Halogen_HTML_Events.onMouseOut(q(new Data_Either.Left(false))), Halogen_HTML_Events.onMouseEnter(q(new Data_Either.Right(true))), Halogen_HTML_Events.onMouseLeave(q(new Data_Either.Right(false))) ];
+    };
+}, function (v) {
+    return function (e) {
+        var next = function (v1) {
+            return function (v2) {
+                if (v1 instanceof Data_Either.Left) {
+                    return new Data_Tuple.Tuple(v1.value0, v2.value1);
+                };
+                if (v1 instanceof Data_Either.Right) {
+                    return new Data_Tuple.Tuple(v2.value0, v1.value0);
+                };
+                throw new Error("Failed pattern match at Halogen.Behavior line 270, column 9 - line 270, column 47: " + [ v1.constructor.name, v2.constructor.name ]);
+            };
+        };
+        return Data_Functor.mapFlipped(FRP_Behavior.functorABehavior(FRP_Event.functorEvent))(FRP_Behavior.unfold(FRP_Event.eventIsEvent)(next)(e)(new Data_Tuple.Tuple(false, false)))(function (v1) {
+            if (v1.value1) {
+                return Child.value;
+            };
+            if (v1.value0) {
+                return Here.value;
+            };
+            if (!v1.value0 && !v1.value1) {
+                return None.value;
+            };
+            throw new Error("Failed pattern match at Halogen.Behavior line 265, column 57 - line 268, column 32: " + [ v1.constructor.name ]);
+        });
+    };
+});
 var preciseFocusElementBehavior = new ElementBehavior(function () {
     return new Data_Symbol.IsSymbol(function () {
         return "preciseFocus";
@@ -41257,13 +41313,13 @@ var initializeRL = function (dict) {
     return dict.initializeRL;
 };
 var initialize = function (v) {
-    return Data_Functor.mapFlipped(Control_Monad_Eff.functorEff)(Control_Monad_Eff_Ref.newRef(v.insideState))(function ($254) {
+    return Data_Functor.mapFlipped(Control_Monad_Eff.functorEff)(Control_Monad_Eff_Ref.newRef(v.insideState))(function ($275) {
         return AroundState((function (v1) {
             return {
                 insideState: v.insideState, 
                 outsideState: v1
             };
-        })(Data_Maybe.Just.create($254)));
+        })(Data_Maybe.Just.create($275)));
     });
 };
 var hoverElementBehavior = new ElementBehavior(function () {
@@ -41472,7 +41528,7 @@ var mabCons = function (dictIsSymbol) {
                                                                 if (v1 instanceof Data_Maybe.Nothing) {
                                                                     return removeProperty(propName, el);
                                                                 };
-                                                                throw new Error("Failed pattern match at Halogen.Behavior line 357, column 16 - line 359, column 58: " + [ v1.constructor.name ]);
+                                                                throw new Error("Failed pattern match at Halogen.Behavior line 385, column 16 - line 387, column 58: " + [ v1.constructor.name ]);
                                                             })(handleRL(dictMultiAttrBehaviorRL)(Type_Row.RLProxy.value)(el));
                                                         };
                                                     }, function (v) {
@@ -41480,8 +41536,8 @@ var mabCons = function (dictIsSymbol) {
                                                             var handleThis = function (v1) {
                                                                 return function __do() {
                                                                     var v2 = Control_Monad_Eff_Ref.readRef(ref)();
-                                                                    var $197 = eqMProp(dictIsProp)(Data_Record.get(dictIsSymbol)(dictRowCons1)(Data_Symbol.SProxy.value)(v2))(v1);
-                                                                    if ($197) {
+                                                                    var $217 = eqMProp(dictIsProp)(Data_Record.get(dictIsSymbol)(dictRowCons1)(Data_Symbol.SProxy.value)(v2))(v1);
+                                                                    if ($217) {
                                                                         return false;
                                                                     };
                                                                     Control_Monad_Eff_Ref.modifyRef(ref)(Data_Record.set(dictIsSymbol)(dictRowCons1)(dictRowCons1)(Data_Symbol.SProxy.value)(v1))();
@@ -41495,11 +41551,11 @@ var mabCons = function (dictIsSymbol) {
                                                         return function (r) {
                                                             return function (cb) {
                                                                 return function __do() {
-                                                                    var v1 = subscribeRL(dictMultiAttrBehaviorRL)(Type_Row.RLProxy.value)(Data_Record["delete"](dictIsSymbol)(dictRowLacks2)(dictRowCons2)(Data_Symbol.SProxy.value)(r))(function ($255) {
-                                                                        return cb(Data_Variant.expand(dictUnion)($255));
+                                                                    var v1 = subscribeRL(dictMultiAttrBehaviorRL)(Type_Row.RLProxy.value)(Data_Record["delete"](dictIsSymbol)(dictRowLacks2)(dictRowCons2)(Data_Symbol.SProxy.value)(r))(function ($276) {
+                                                                        return cb(Data_Variant.expand(dictUnion)($276));
                                                                     })();
-                                                                    var v2 = FRP_Behavior.animate(Data_Record.get(dictIsSymbol)(dictRowCons2)(Data_Symbol.SProxy.value)(r))(function ($256) {
-                                                                        return cb(Data_Variant.inj(dictRowCons1)(dictIsSymbol)(Data_Symbol.SProxy.value)($256));
+                                                                    var v2 = FRP_Behavior.animate(Data_Record.get(dictIsSymbol)(dictRowCons2)(Data_Symbol.SProxy.value)(r))(function ($277) {
+                                                                        return cb(Data_Variant.inj(dictRowCons1)(dictIsSymbol)(Data_Symbol.SProxy.value)($277));
                                                                     })();
                                                                     return Control_Apply.applySecond(Control_Monad_Eff.applyEff)(v1)(v2);
                                                                 };
@@ -41515,7 +41571,7 @@ var mabCons = function (dictIsSymbol) {
                                                             if (v1 instanceof Data_Maybe.Just) {
                                                                 return Data_Semigroup.append(Data_Semigroup.semigroupArray)(other)([ new Halogen_VDom_DOM_Prop.Property(Data_Symbol.reflectSymbol(dictIsSymbol)(Data_Symbol.SProxy.value), Halogen_HTML_Core.toPropValue(dictIsProp)(v1.value0)) ]);
                                                             };
-                                                            throw new Error("Failed pattern match at Halogen.Behavior line 366, column 23 - line 368, column 80: " + [ v1.constructor.name ]);
+                                                            throw new Error("Failed pattern match at Halogen.Behavior line 394, column 23 - line 396, column 80: " + [ v1.constructor.name ]);
                                                         };
                                                     });
                                                 };
@@ -41591,32 +41647,32 @@ var behavioralComponent = function (dictMonadAff) {
                                             return Data_Functor.voidRight(Halogen_Query_HalogenM.functorHalogenM)(v.value0)(Control_Bind.discard(Control_Bind.discardUnit)(Halogen_Query_HalogenM.bindHalogenM)($$eval(new Finalize(Data_Unit.unit)))(function () {
                                                 return Control_Bind.bind(Halogen_Query_HalogenM.bindHalogenM)(Control_Bind.bind(Halogen_Query_HalogenM.bindHalogenM)(Control_Monad_State_Class.gets(Halogen_Query_HalogenM.monadStateHalogenM)(function (v1) {
                                                     return v1.as;
-                                                }))(function ($257) {
-                                                    return Control_Monad_Eff_Class.liftEff(Halogen_Query_HalogenM.monadEffHalogenM(dictMonadAff.MonadEff0()))(initialize($257));
+                                                }))(function ($278) {
+                                                    return Control_Monad_Eff_Class.liftEff(Halogen_Query_HalogenM.monadEffHalogenM(dictMonadAff.MonadEff0()))(initialize($278));
                                                 }))(function (v1) {
                                                     return Control_Bind.discard(Control_Bind.discardUnit)(Halogen_Query_HalogenM.bindHalogenM)(Control_Monad_State_Class.modify(Halogen_Query_HalogenM.monadStateHalogenM)(function (v2) {
-                                                        var $204 = {};
-                                                        for (var $205 in v2) {
-                                                            if ({}.hasOwnProperty.call(v2, $205)) {
-                                                                $204[$205] = v2[$205];
+                                                        var $224 = {};
+                                                        for (var $225 in v2) {
+                                                            if ({}.hasOwnProperty.call(v2, $225)) {
+                                                                $224[$225] = v2[$225];
                                                             };
                                                         };
-                                                        $204.as = v1;
-                                                        return $204;
+                                                        $224.as = v1;
+                                                        return $224;
                                                     }))(function () {
                                                         return Control_Bind.bind(Halogen_Query_HalogenM.bindHalogenM)(Control_Monad_Eff_Class.liftEff(Halogen_Query_HalogenM.monadEffHalogenM(dictMonadAff.MonadEff0()))(mkBehaviors(elementBehaviors(dictRowToList)(dictElementBehaviorsRL))(Type_Row.RProxy.value)))(function (v2) {
                                                             return Control_Bind.discard(Control_Bind.discardUnit)(Halogen_Query_HalogenM.bindHalogenM)(Control_Monad_State_Class.modify(Halogen_Query_HalogenM.monadStateHalogenM)(function (v3) {
-                                                                var $208 = {};
-                                                                for (var $209 in v3) {
-                                                                    if ({}.hasOwnProperty.call(v3, $209)) {
-                                                                        $208[$209] = v3[$209];
+                                                                var $228 = {};
+                                                                for (var $229 in v3) {
+                                                                    if ({}.hasOwnProperty.call(v3, $229)) {
+                                                                        $228[$229] = v3[$229];
                                                                     };
                                                                 };
-                                                                $208.pushers = new Data_Maybe.Just(v2.value1);
-                                                                return $208;
+                                                                $228.pushers = new Data_Maybe.Just(v2.value1);
+                                                                return $228;
                                                             }))(function () {
-                                                                return Halogen_Query_HalogenM.subscribe(Halogen_Query_EventSource["eventSource'"](dictMonadAff)(subscribe(dictMultiAttrBehavior)(behavior(v2.value0)))(function ($258) {
-                                                                    return Data_Maybe.Just.create(Data_Functor.flap(Data_Functor.functorFn)(UpdateProp.create)(Halogen_Query_EventSource.Listening.value)($258));
+                                                                return Halogen_Query_HalogenM.subscribe(Halogen_Query_EventSource["eventSource'"](dictMonadAff)(subscribe(dictMultiAttrBehavior)(behavior(v2.value0)))(function ($279) {
+                                                                    return Data_Maybe.Just.create(Data_Functor.flap(Data_Functor.functorFn)(UpdateProp.create)(Halogen_Query_EventSource.Listening.value)($279));
                                                                 }));
                                                             });
                                                         });
@@ -41627,19 +41683,19 @@ var behavioralComponent = function (dictMonadAff) {
                                         if (v instanceof Receive) {
                                             return Data_Functor.voidRight(Halogen_Query_HalogenM.functorHalogenM)(v.value1)(Control_Bind.bind(Halogen_Query_HalogenM.bindHalogenM)(Control_Bind.bind(Halogen_Query_HalogenM.bindHalogenM)(Control_Monad_State_Class.gets(Halogen_Query_HalogenM.monadStateHalogenM)(function (v1) {
                                                 return v1.as;
-                                            }))(function ($259) {
-                                                return Control_Monad_Eff_Class.liftEff(Halogen_Query_HalogenM.monadEffHalogenM(dictMonadAff.MonadEff0()))(snapshot($259));
+                                            }))(function ($280) {
+                                                return Control_Monad_Eff_Class.liftEff(Halogen_Query_HalogenM.monadEffHalogenM(dictMonadAff.MonadEff0()))(snapshot($280));
                                             }))(function (v1) {
                                                 return Control_Monad_State_Class.modify(Halogen_Query_HalogenM.monadStateHalogenM)(function (v2) {
-                                                    var $215 = {};
-                                                    for (var $216 in v2) {
-                                                        if ({}.hasOwnProperty.call(v2, $216)) {
-                                                            $215[$216] = v2[$216];
+                                                    var $235 = {};
+                                                    for (var $236 in v2) {
+                                                        if ({}.hasOwnProperty.call(v2, $236)) {
+                                                            $235[$236] = v2[$236];
                                                         };
                                                     };
-                                                    $215.value = v.value0;
-                                                    $215.as = v1;
-                                                    return $215;
+                                                    $235.value = v.value0;
+                                                    $235.as = v1;
+                                                    return $235;
                                                 });
                                             }));
                                         };
@@ -41669,7 +41725,7 @@ var behavioralComponent = function (dictMonadAff) {
                                                 return Control_Monad_Eff_Class.liftEff(Control_Monad_Maybe_Trans.monadEffMaybe(Halogen_Query_HalogenM.monadEffHalogenM(dictMonadAff.MonadEff0())))(update(elementBehaviors(dictRowToList)(dictElementBehaviorsRL))(Type_Row.RProxy.value)(Type_Row.RProxy.value)(v1)(v.value0));
                                             })));
                                         };
-                                        throw new Error("Failed pattern match at Halogen.Behavior line 516, column 5 - line 516, column 134: " + [ v.constructor.name ]);
+                                        throw new Error("Failed pattern match at Halogen.Behavior line 544, column 5 - line 544, column 134: " + [ v.constructor.name ]);
                                     };
                                     var addRefProps = function (v) {
                                         return Data_Semigroup.append(Data_Semigroup.semigroupArray)([ Halogen_HTML_Properties.ref("behavioral-component") ])(v);
@@ -41702,10 +41758,10 @@ var behavioralComponent = function (dictMonadAff) {
 };
 var main = (function () {
     var spacebar = FRP_Behavior_Keyboard.key(32);
-    var pressed = Data_Functor.mapFlipped(FRP_Behavior.functorABehavior(FRP_Event.functorEvent))(FRP_Behavior_Mouse.buttons)(function ($260) {
+    var pressed = Data_Functor.mapFlipped(FRP_Behavior.functorABehavior(FRP_Event.functorEvent))(FRP_Behavior_Mouse.buttons)(function ($281) {
         return (function (v) {
             return v > 0;
-        })(Data_Set.size($260));
+        })(Data_Set.size($281));
     });
     var italic = Data_Functor.mapFlipped(FRP_Behavior.functorABehavior(FRP_Event.functorEvent))(pressed)(function (v) {
         if (v) {
@@ -41750,13 +41806,26 @@ var main = (function () {
             return el([ Halogen_HTML_Properties.value(v), Halogen_HTML_Events.onInput(Halogen_HTML_Events.input(Data_Tuple.Tuple.create)) ])([  ]);
         };
     });
-    var combine = function (coleur) {
-        return function (italicite) {
-            return Data_String.joinWith("; ")([ "color: " + coleur, "font-style: " + italicite ]);
+    var combine = function (focusedWhere) {
+        return function (coleur) {
+            return function (italicite) {
+                return Data_String.joinWith("; ")(Data_Semigroup.append(Data_Semigroup.semigroupArray)([ "color: " + coleur, "font-style: " + italicite ])((function () {
+                    if (focusedWhere instanceof Here) {
+                        return [ "font-weight: normal" ];
+                    };
+                    if (focusedWhere instanceof Child) {
+                        return [ "font-decoration: underline" ];
+                    };
+                    if (focusedWhere instanceof None) {
+                        return [ "text-transform: capitalize" ];
+                    };
+                    throw new Error("Failed pattern match at Halogen.Behavior line 603, column 12 - line 606, column 49: " + [ focusedWhere.constructor.name ]);
+                })()));
+            };
         };
     };
-    var blink = Data_Functor.mapFlipped(FRP_Behavior.functorABehavior(FRP_Event.functorEvent))(FRP_Behavior_Time.seconds)(function ($261) {
-        return Data_Int.even(Data_Int.round($261));
+    var blink = Data_Functor.mapFlipped(FRP_Behavior.functorABehavior(FRP_Event.functorEvent))(FRP_Behavior_Time.seconds)(function ($282) {
+        return Data_Int.even(Data_Int.round($282));
     });
     var colorName = Data_Functor.mapFlipped(FRP_Behavior.functorABehavior(FRP_Event.functorEvent))(blink)(function (v) {
         if (v) {
@@ -41766,7 +41835,7 @@ var main = (function () {
     });
     var b = function (v) {
         return {
-            style: Data_Functor.map(FRP_Behavior.functorABehavior(FRP_Event.functorEvent))(Data_Maybe.Just.create)(Control_Apply.apply(FRP_Behavior.applyABehavior(FRP_Event.functorEvent))(Data_Functor.map(FRP_Behavior.functorABehavior(FRP_Event.functorEvent))(combine)(colorName))(italic)), 
+            style: Data_Functor.map(FRP_Behavior.functorABehavior(FRP_Event.functorEvent))(Data_Maybe.Just.create)(Control_Apply.apply(FRP_Behavior.applyABehavior(FRP_Event.functorEvent))(Control_Apply.apply(FRP_Behavior.applyABehavior(FRP_Event.functorEvent))(Data_Functor.map(FRP_Behavior.functorABehavior(FRP_Event.functorEvent))(combine)(v.preciseHover))(colorName))(italic)), 
             "class": Data_Functor.mapFlipped(FRP_Behavior.functorABehavior(FRP_Event.functorEvent))(spacebar)(function (v1) {
                 if (v1) {
                     return new Data_Maybe.Just("align-right");
@@ -41783,13 +41852,13 @@ var main = (function () {
         return "class";
     }))(Halogen_HTML_Core.stringIsProp)(Type_Row.rowLacks()()()(Type_Row.rowLacking))(Type_Row.rowLacks()()()(Type_Row.rowLacking))(Type_Row.rowLacks()()()(Type_Row.rowLacking))()()()()()()()(mabCons(new Data_Symbol.IsSymbol(function () {
         return "style";
-    }))(Halogen_HTML_Core.stringIsProp)(Type_Row.rowLacks()()()(Type_Row.rowLacking))(Type_Row.rowLacks()()()(Type_Row.rowLacking))(Type_Row.rowLacks()()()(Type_Row.rowLacking))()()()()()()()(mabNil))))()(elementBehaviorsCons(focusElementBehavior)()()()()(Type_Row.rowLacks()()()(Type_Row.rowLacking))(Type_Row.rowLacks()()()(Type_Row.rowLacking))(Type_Row.rowLacks()()()(Type_Row.rowLacking))()(Type_Row.listToRowCons(Type_Row.listToRowCons(Type_Row.listToRowNil)())())()()(Data_Variant_Internal.variantMatchCons(Data_Variant_Internal.variantMatchCons(Data_Variant_Internal.variantMatchNil)()(Type_Equality.refl))()(Type_Equality.refl))(elementBehaviorsCons(hoverElementBehavior)()()()()(Type_Row.rowLacks()()()(Type_Row.rowLacking))(Type_Row.rowLacks()()()(Type_Row.rowLacking))(Type_Row.rowLacks()()()(Type_Row.rowLacking))()(Type_Row.listToRowCons(Type_Row.listToRowNil)())()()(Data_Variant_Internal.variantMatchCons(Data_Variant_Internal.variantMatchNil)()(Type_Equality.refl))(elementBehaviorsNil)))()(nothingsImpl()(Type_Row.listToRowCons(Type_Row.listToRowCons(Type_Row.listToRowNil)())())(nothingsCons(new Data_Symbol.IsSymbol(function () {
+    }))(Halogen_HTML_Core.stringIsProp)(Type_Row.rowLacks()()()(Type_Row.rowLacking))(Type_Row.rowLacks()()()(Type_Row.rowLacking))(Type_Row.rowLacks()()()(Type_Row.rowLacking))()()()()()()()(mabNil))))()(elementBehaviorsCons(hoverElementBehavior)()()()()(Type_Row.rowLacks()()()(Type_Row.rowLacking))(Type_Row.rowLacks()()()(Type_Row.rowLacking))(Type_Row.rowLacks()()()(Type_Row.rowLacking))()(Type_Row.listToRowCons(Type_Row.listToRowCons(Type_Row.listToRowNil)())())()()(Data_Variant_Internal.variantMatchCons(Data_Variant_Internal.variantMatchCons(Data_Variant_Internal.variantMatchNil)()(Type_Equality.refl))()(Type_Equality.refl))(elementBehaviorsCons(preciseHoverElementBehavior)()()()()(Type_Row.rowLacks()()()(Type_Row.rowLacking))(Type_Row.rowLacks()()()(Type_Row.rowLacking))(Type_Row.rowLacks()()()(Type_Row.rowLacking))()(Type_Row.listToRowCons(Type_Row.listToRowNil)())()()(Data_Variant_Internal.variantMatchCons(Data_Variant_Internal.variantMatchNil)()(Type_Equality.refl))(elementBehaviorsNil)))()(nothingsImpl()(Type_Row.listToRowCons(Type_Row.listToRowCons(Type_Row.listToRowNil)())())(nothingsCons(new Data_Symbol.IsSymbol(function () {
         return "class";
     }))()(Type_Row.rowLacks()()()(Type_Row.rowLacking))()(nothingsCons(new Data_Symbol.IsSymbol(function () {
         return "style";
-    }))()(Type_Row.rowLacks()()()(Type_Row.rowLacking))()(nothingsNil))))(Halogen_HTML_Elements.div))(b)(function (el) {
+    }))()(Type_Row.rowLacks()()()(Type_Row.rowLacking))()(nothingsNil))))(Halogen_HTML_Elements.h1))(b)(function (el) {
         return function (t) {
-            return el([  ])([ Halogen_HTML_Elements.h1_([ Halogen_HTML_Core.text(t) ]) ]);
+            return el([  ])([ Halogen_HTML_Core.text(t), Halogen_HTML_Elements.span_([ Halogen_HTML_Core.text(" my span") ]) ]);
         };
     });
     var parent = Halogen_Component.parentComponent(Data_Either.ordEither(Data_Ord.ordUnit)(Data_Either.ordEither(Data_Ord.ordUnit)(Data_Ord.ordVoid)))({
@@ -41797,8 +41866,8 @@ var main = (function () {
             return Halogen_HTML_Elements.div_([ Halogen_HTML["slot'"](Halogen_Component_ChildPath.cp2)(Data_Unit.unit)(component2)(v)(Control_Applicative.pure(Data_Maybe.applicativeMaybe)), Halogen_HTML["slot'"](Halogen_Component_ChildPath.cp1)(Data_Unit.unit)(component1)(v)(Data_Void.absurd) ]);
         }, 
         "eval": function (v) {
-            return Data_Functor.voidRight(Halogen_Query_HalogenM.functorHalogenM)(v.value1)(Data_Foldable.for_(Halogen_Query_HalogenM.applicativeHalogenM)(Data_Either.foldableEither)(Control_Monad_Except.runExcept(DOM_HTML_Types.readHTMLInputElement(Data_Foreign.toForeign(DOM_Event_Event.target(v.value0)))))(Control_Bind.composeKleisli(Halogen_Query_HalogenM.bindHalogenM)(function ($262) {
-                return Control_Monad_Eff_Class.liftEff(Halogen_Query_HalogenM.monadEffHalogenM(Control_Monad_Aff.monadEffAff))(DOM_HTML_HTMLInputElement.value($262));
+            return Data_Functor.voidRight(Halogen_Query_HalogenM.functorHalogenM)(v.value1)(Data_Foldable.for_(Halogen_Query_HalogenM.applicativeHalogenM)(Data_Either.foldableEither)(Control_Monad_Except.runExcept(DOM_HTML_Types.readHTMLInputElement(Data_Foreign.toForeign(DOM_Event_Event.target(v.value0)))))(Control_Bind.composeKleisli(Halogen_Query_HalogenM.bindHalogenM)(function ($283) {
+                return Control_Monad_Eff_Class.liftEff(Halogen_Query_HalogenM.monadEffHalogenM(Control_Monad_Aff.monadEffAff))(DOM_HTML_HTMLInputElement.value($283));
             })(Control_Monad_State_Class.put(Halogen_Query_HalogenM.monadStateHalogenM))));
         }, 
         initialState: Data_Function["const"]("Hold a mouse button down anywhere on the page to make this text italic!"), 
@@ -41809,6 +41878,9 @@ var main = (function () {
 module.exports = {
     AroundState: AroundState, 
     Deletor: Deletor, 
+    Here: Here, 
+    Child: Child, 
+    None: None, 
     HereFocused: HereFocused, 
     ChildFocused: ChildFocused, 
     Unfocused: Unfocused, 
@@ -41867,6 +41939,7 @@ module.exports = {
     focusElementBehavior: focusElementBehavior, 
     hoverElementBehavior: hoverElementBehavior, 
     preciseFocusElementBehavior: preciseFocusElementBehavior, 
+    preciseHoverElementBehavior: preciseHoverElementBehavior, 
     mab: mab, 
     mabNil: mabNil, 
     mabCons: mabCons, 
