@@ -2,16 +2,18 @@ module Halogen.Behavior where
 
 import Prelude
 
+import Control.Monad.Aff (Aff)
 import Control.Monad.Aff.Class (class MonadAff)
 import Control.Monad.Eff (Eff)
 import Control.Monad.Eff.AVar (AVAR)
+import Control.Monad.Eff.Exception (EXCEPTION)
 import Control.Monad.Eff.Ref (REF, Ref, modifyRef, newRef, readRef)
 import Control.Monad.Eff.Uncurried as EffFn
 import Control.Monad.Eff.Unsafe (unsafeCoerceEff)
 import Control.Monad.Except (runExcept)
 import Control.Monad.Maybe.Trans (MaybeT(..), runMaybeT)
 import Control.Monad.ST (ST)
-import Control.MonadZero (guard)
+import Control.MonadZero (guard, (<|>))
 import DOM (DOM)
 import DOM.Event.Event (target)
 import DOM.Event.Types (FocusEvent, MouseEvent)
@@ -21,12 +23,14 @@ import DOM.Node.Types (Element)
 import Data.Array.ST (emptySTArray, pokeSTArray, pushSTArray, unsafeFreeze)
 import Data.Const (Const)
 import Data.Either (Either(..))
-import Data.Either.Nested (Either2)
-import Data.Foldable (for_, traverse_)
+import Data.Either.Nested (Either3)
+import Data.Foldable (elem, for_, traverse_)
 import Data.Foreign (toForeign, typeOf)
 import Data.Function.Uncurried as Fn
-import Data.Functor.Coproduct.Nested (Coproduct2)
+import Data.Functor.Coproduct.Nested (Coproduct3)
+import Data.FunctorWithIndex (mapWithIndex)
 import Data.Int (even, round)
+import Data.Lens (review)
 import Data.Maybe (Maybe(..))
 import Data.Record (delete, get, insert, set)
 import Data.Record.Builder as B
@@ -37,11 +41,11 @@ import Data.Tuple (Tuple(..))
 import Data.Variant (class VariantMatchCases, Variant, case_, expand, inj, on)
 import FRP (FRP)
 import FRP.Behavior (ABehavior, Behavior, animate, step, unfold)
-import FRP.Behavior.Keyboard (key)
+import FRP.Behavior.Keyboard (key, modifiers)
 import FRP.Behavior.Mouse (buttons)
 import FRP.Behavior.Time (seconds)
 import FRP.Event (Event)
-import Halogen (RefLabel(..))
+import Halogen (Component, RefLabel(..))
 import Halogen as H
 import Halogen.Aff (awaitBody, runHalogenAff)
 import Halogen.Component.ChildPath as CP
@@ -58,6 +62,9 @@ import Halogen.VDom.Util as Util
 import Type.Row (class ListToRow, class RowLacks, class RowToList, Cons, Nil, RLProxy(..), RProxy(..), kind RowList)
 import Unsafe.Coerce (unsafeCoerce)
 import Unsafe.Reference (unsafeRefEq)
+import Web.UIEvents.Key (fromModifier, unparse)
+import Web.UIEvents.Key.Internal.Modifier (Modifier(..))
+import Web.UIEvents.Key.Prisms (_space)
 
 expandAttr ::
   forall attrs attrs' extra.
@@ -589,12 +596,19 @@ removeProperty = Fn.mkFn2 \key el →
     "string" → Fn.runFn3 Util.unsafeSetAny key "" el
     _        → Fn.runFn3 Util.unsafeSetAny key Util.jsUndefined el
 
-main :: _
+main :: forall e. Eff
+  ( avar :: AVAR
+  , ref :: REF
+  , exception :: EXCEPTION
+  , dom :: DOM
+  , frp :: FRP
+  | e
+  ) Unit
 main = runHalogenAff $ awaitBody >>= runUI parent unit
   where
     pressed = buttons <#> size >>> (_ > 0)
     blink = seconds <#> round >>> even
-    spacebar = key 32
+    spacebar = key (review _space unit)
     colorName = blink <#> if _ then "orange" else "rebeccapurple"
     italic = pressed <#> if _ then "italic" else "normal"
     combine focusedWhere coleur italicite = joinWith "; " $
@@ -619,14 +633,35 @@ main = runHalogenAff $ awaitBody >>= runUI parent unit
         then if h then "purple" else "blue"
         else if h then "red" else "black"
       ) <$> focus <*> hover
+    mods = [Shift, Control, Alt, Meta]
+    mkModifier :: Modifier -> {} -> { "style" :: Behavior (Maybe String) }
+    mkModifier m {} =
+      { "style": modifiers <#> elem m >>> (if _ then "background-color: pink; width: 20em" else "width: 20em") >>> pure
+      }
+    modifierComponent :: forall u v.
+      Modifier ->
+      Component HH.HTML
+        (Query () ( style :: Maybe String ) u v)
+        u v
+        (Aff
+           ( avar :: AVAR
+           , ref :: REF
+           , exception :: EXCEPTION
+           , dom :: DOM
+           , frp :: FRP
+           | e
+           )
+        )
+    modifierComponent m = behavioralComponent HH.div <@> mkModifier m $ \el t ->
+      el [] [ HH.text (unparse (fromModifier m)) ]
     component2 = behavioralComponent (\a _ -> HH.input a) <@> inputColor $ \el v ->
       el [ HP.value v, HE.onInput (HE.input Tuple) ] []
     parent = H.parentComponent
       { render: \v ->
-        HH.div_
-          [ HH.slot' cp_cp2 unit component2 v pure
-          , HH.slot' CP.cp1 unit component1 v absurd
-          ]
+        HH.div_ $
+          [ HH.slot' cp_cp3 unit component2 v pure
+          , HH.slot' CP.cp2 unit component1 v absurd
+          ] <|> mapWithIndex (\i -> modifierComponent >>> \c -> HH.slot' CP.cp1 i c unit absurd) mods
       , eval: \(Tuple e a) -> a <$ do
           for_ (runExcept $ target e # toForeign # readHTMLInputElement)
             (value >>> H.liftEff >=> H.put)
@@ -635,4 +670,4 @@ main = runHalogenAff $ awaitBody >>= runUI parent unit
       }
       where
         -- Give a finite type to the slot
-        cp_cp2 = CP.cp2 :: forall f g a b. CP.ChildPath g (Coproduct2 f g) b (Either2 a b)
+        cp_cp3 = CP.cp3 :: forall f g h a b c. CP.ChildPath h (Coproduct3 f g h) c (Either3 a b c)
