@@ -66,6 +66,8 @@ data Query internals partial i o a
   | UpdateProp (Variant partial) a
   | UpdateBehavior (Variant internals) a
 
+type SimpleHTML m o = HH.HTML (H.ComponentSlot HH.HTML (Const Void) m Void o) o
+type SimpleHTML1 m q = SimpleHTML m (q Unit)
 
 behavioralComponent ::
   forall m all i o required partial behaviors eff ebehaviors callbacks internals other rl.
@@ -79,11 +81,11 @@ behavioralComponent ::
     (o -> q Unit) ->
     (
       Array (HH.IProp other o) ->
-      Array (HH.HTML (H.ComponentSlot HH.HTML (Const Void) m Void o) o) ->
-      H.ParentHTML q (Const Void) Void m
+      Array (SimpleHTML m o) ->
+      SimpleHTML1 m q
     ) ->
     i ->
-    H.ParentHTML q (Const Void) Void m
+    SimpleHTML1 m q
   ) ->
   (
     Record ebehaviors ->
