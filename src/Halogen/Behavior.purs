@@ -14,6 +14,7 @@ import DOM (DOM)
 import DOM.Event.Event (target)
 import DOM.HTML.HTMLInputElement (value)
 import DOM.HTML.Types (htmlElementToElement, readHTMLInputElement)
+import Data.Bifunctor (bimap)
 import Data.Const (Const)
 import Data.Either.Nested (Either2)
 import Data.Foldable (for_)
@@ -65,6 +66,7 @@ data Query internals partial i o a
   | UpdateProp (Variant partial) a
   | UpdateBehavior (Variant internals) a
 
+
 behavioralComponent ::
   forall m all i o required partial behaviors eff ebehaviors callbacks internals other rl.
     MonadAff ( dom :: DOM, frp :: FRP, ref :: REF, avar :: AVAR | eff ) m =>
@@ -74,26 +76,52 @@ behavioralComponent ::
     ElementBehaviorsRL all rl ebehaviors callbacks internals =>
     Union required other all =>
     Nothings partial =>
-  -- Warning: leaky abstraction
-  HH.Node (all) Void (Query internals partial i o Unit) ->
-  (
-    -- Still leaking
+  (forall w q. HH.Node all w q) ->
+  (forall q.
+    (o -> q Unit) ->
     (
       Array (HH.IProp other o) ->
-      Array (HH.HTML Void o) ->
-      H.HTML Void (Query internals partial i o)
+      Array (HH.HTML (H.ComponentSlot HH.HTML (Const Void) m Void o) o) ->
+      H.ParentHTML q (Const Void) Void m
     ) ->
     i ->
-    -- Leaked
-    H.HTML Void (Query internals partial i o)
+    H.ParentHTML q (Const Void) Void m
   ) ->
   (
     Record ebehaviors ->
     Record behaviors
   ) ->
   H.Component HH.HTML (Query internals partial i o) i o m
-behavioralComponent node renderWith behavior =
-  H.lifecycleComponent
+behavioralComponent = behavioralParentComponent
+
+behavioralParentComponent ::
+  forall g p m all i o required partial behaviors eff ebehaviors callbacks internals other rl.
+    MonadAff ( dom :: DOM, frp :: FRP, ref :: REF, avar :: AVAR | eff ) m =>
+    MultiAttrBehavior required partial behaviors =>
+    -- ElementBehaviors all ebehaviors callbacks internals =>
+    RowToList ebehaviors rl =>
+    ElementBehaviorsRL all rl ebehaviors callbacks internals =>
+    Union required other all =>
+    Nothings partial =>
+    Ord p =>
+  (forall w q. HH.Node all w q) ->
+  (forall q.
+    (o -> q Unit) ->
+    (
+      Array (HH.IProp other o) ->
+      Array (HH.HTML (H.ComponentSlot HH.HTML g m p o) o) ->
+      H.ParentHTML q g p m
+    ) ->
+    i ->
+    H.ParentHTML q g p m
+  ) ->
+  (
+    Record ebehaviors ->
+    Record behaviors
+  ) ->
+  H.Component HH.HTML (Query internals partial i o) i o m
+behavioralParentComponent node renderWith behavior =
+  H.lifecycleParentComponent
     { initialState
     , receiver: HE.input Receive
     , initializer: HE.input_ Initialize unit
@@ -106,23 +134,27 @@ behavioralComponent node renderWith behavior =
     addRefProps = ([HP.ref label] <> _)
     expand1 = unsafeCoerce :: (Array (HH.IProp other o) -> Array (HH.IProp (all) o))
     expand2 = unsafeCoerce :: (Array (HH.IProp required o) -> Array (HH.IProp (all) o))
-    events :: Array (H.IProp (all) (Query internals partial i o))
+    events :: Array (H.IProp all (Query internals partial i o))
     events = mapIProp (UpdateBehavior <@> unit) <$> attrsRL (RLProxy :: RLProxy rl)
-    lifting :: Array (HH.IProp (all) o) -> Array (H.IProp (all) (Query internals partial i o))
-    lifting = map (mapIProp (Lift <@> unit))
+    lift1 :: o -> Query internals partial i o Unit
+    lift1 = Lift <@> unit
+    adapt :: HH.HTML (H.ComponentSlot HH.HTML g m p o) o -> H.ParentHTML (Query internals partial i o) g p m
+    adapt = bimap (map lift1) lift1
+    lifting :: Array (HH.IProp all o) -> Array (H.IProp all (Query internals partial i o))
+    lifting = map (mapIProp (lift1))
 
     -- Render the component. Delegates to the passed in renderer,
     -- lifts all communication from it.
-    render :: State callbacks partial i -> H.HTML Void (Query internals partial i o)
+    render :: State callbacks partial i -> H.ParentHTML (Query internals partial i o) g p m
     render { value, as: (AroundState { insideState: latest }), pushers } =
       let
         props = addRefProps (toProps latest)
         renderer attrs children =
           node (events <> lifting (expand1 attrs <> expand2 props))
-          (map (Lift <@> unit) <$> children)
-      in renderWith renderer value
+          (adapt <$> children)
+      in renderWith lift1 renderer value
 
-    eval :: Query internals partial i o ~> H.HalogenM (State callbacks partial i) (Query internals partial i o) (Const Void) Void o m
+    eval :: Query internals partial i o ~> H.HalogenM (State callbacks partial i) (Query internals partial i o) g p o m
     -- Initialize the component.
     eval (Initialize a) = a <$ do
       -- Run the finalizer, just in case ....
@@ -188,7 +220,7 @@ main = runHalogenAff $ awaitBody >>= runUI parent unit
       , "class": spacebar <#> if _ then Just "align-right" else Nothing
       }
     help = "Hold a mouse button down anywhere on the page to make this text italic!"
-    component1 = behavioralComponent HH.h1 <@> b $ \el t ->
+    component1 = (behavioralComponent HH.h1 <@> b) \_ el t ->
       el [] [ HH.text t, HH.span_ [ HH.text " my span" ] ]
     inputColor :: { focus :: Behavior Boolean, hover :: Behavior Boolean } -> { style :: Behavior (Maybe String) }
     inputColor { focus, hover } = { style: _ } $ map Just $
@@ -197,7 +229,7 @@ main = runHalogenAff $ awaitBody >>= runUI parent unit
         then if h then "purple" else "blue"
         else if h then "red" else "black"
       ) <$> focus <*> hover
-    component2 = behavioralComponent (\a _ -> HH.input a) <@> inputColor $ \el v ->
+    component2 = (behavioralComponent (\a _ -> HH.input a) <@> inputColor) \_ el v ->
       el [ HP.value v, HE.onInput (HE.input Tuple) ] []
     parent = H.parentComponent
       { render: \v ->
