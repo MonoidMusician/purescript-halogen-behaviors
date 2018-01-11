@@ -34,7 +34,7 @@ import FRP.Behavior.Time (seconds)
 import Halogen (RefLabel(..))
 import Halogen as H
 import Halogen.Aff (awaitBody, runHalogenAff)
-import Halogen.Behavior.ElementBehaviors (class ElementBehaviorsRL, Precise(..), attrsRL, mkBehaviors, update)
+import Halogen.Behavior.ElementBehaviors (class ElementBehaviors, Precise(..), allAttrs, mkBehaviors, update)
 import Halogen.Behavior.Internal (class Nothings, AroundState(..), initialize, mapIProp, snapshot, uninitializedAS)
 import Halogen.Behavior.Internal.MultiAttrBehavior (class MultiAttrBehavior, handle, shouldUpdate, subscribe, toProps)
 import Halogen.Component.ChildPath as CP
@@ -43,7 +43,7 @@ import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Halogen.Query.EventSource (eventSource')
 import Halogen.VDom.Driver (runUI)
-import Type.Row (class RowToList, RLProxy(RLProxy), RProxy(RProxy))
+import Type.Row (RProxy(..))
 import Unsafe.Coerce (unsafeCoerce)
 
 type State callbacks partial i =
@@ -71,9 +71,7 @@ behavioralComponent ::
   forall m all i o required partial behaviors eff ebehaviors callbacks internals other rl.
     MonadAff ( dom :: DOM, frp :: FRP, ref :: REF, avar :: AVAR | eff ) m =>
     MultiAttrBehavior required partial behaviors =>
-    -- ElementBehaviors all ebehaviors callbacks internals =>
-    RowToList ebehaviors rl =>
-    ElementBehaviorsRL all rl ebehaviors callbacks internals =>
+    ElementBehaviors all ebehaviors callbacks internals =>
     Union required other all =>
     Nothings partial =>
   (forall w q. HH.Node all w q) ->
@@ -98,9 +96,7 @@ behavioralParentComponent ::
   forall g p m all i o required partial behaviors eff ebehaviors callbacks internals other rl.
     MonadAff ( dom :: DOM, frp :: FRP, ref :: REF, avar :: AVAR | eff ) m =>
     MultiAttrBehavior required partial behaviors =>
-    -- ElementBehaviors all ebehaviors callbacks internals =>
-    RowToList ebehaviors rl =>
-    ElementBehaviorsRL all rl ebehaviors callbacks internals =>
+    ElementBehaviors all ebehaviors callbacks internals =>
     Union required other all =>
     Nothings partial =>
     Ord p =>
@@ -135,7 +131,7 @@ behavioralParentComponent node renderWith behavior =
     expand1 = unsafeCoerce :: (Array (HH.IProp other o) -> Array (HH.IProp (all) o))
     expand2 = unsafeCoerce :: (Array (HH.IProp required o) -> Array (HH.IProp (all) o))
     events :: Array (H.IProp all (Query internals partial i o))
-    events = mapIProp (UpdateBehavior <@> unit) <$> attrsRL (RLProxy :: RLProxy rl)
+    events = mapIProp (UpdateBehavior <@> unit) <$> allAttrs (RProxy :: RProxy ebehaviors)
     lift1 :: o -> Query internals partial i o Unit
     lift1 = Lift <@> unit
     adapt :: HH.HTML (H.ComponentSlot HH.HTML g m p o) o -> H.ParentHTML (Query internals partial i o) g p m
