@@ -40,7 +40,7 @@ import FRP.Behavior (ABehavior, Behavior, animate, step, unfold)
 import FRP.Behavior.Keyboard (key)
 import FRP.Behavior.Mouse (buttons)
 import FRP.Behavior.Time (seconds)
-import FRP.Event (Event)
+import FRP.Event (Event, create)
 import Halogen (RefLabel(..))
 import Halogen as H
 import Halogen.Aff (awaitBody, runHalogenAff)
@@ -163,11 +163,11 @@ instance elementBehaviorsCons ::
   where
     initializeRL _ r = do
       Tuple b' cb' <- initializeRL (RLProxy :: RLProxy rl) r
-      { event, push: cb } <- subject
+      { event, push: cb } <- create
       let b = process s event
       pure $ Tuple
         (b' >>> B.insert s b)
-        (cb' >>> B.insert s (unsafeCoerce (EffFn.runEffFn1 cb)))
+        (cb' >>> B.insert s (unsafeCoerceEff <<< cb))
       where s = SProxy :: SProxy s
     updateRL _ r cbs =
       on s (unsafeCoerce cb) $
@@ -455,34 +455,6 @@ instance nothingsCons ::
   ) => NothingsRL (Cons label (Maybe ty) rl) row where
     aWholeLotOfNothingRL _ = insert (SProxy :: SProxy label) Nothing
       (aWholeLotOfNothingRL (RLProxy :: RLProxy rl) :: Record row')
-
-subject :: forall a eff.
-  Eff ( frp :: FRP | eff )
-  { event :: Event a, push :: EffFn.EffFn1 ( frp :: FRP | eff ) a Unit }
-subject = unsafeCoerce subject'
-subject' :: forall a eff.
-  Eff ( frp :: FRP | eff )
-    { event ::
-        EffFn.EffFn1 ( frp :: FRP | eff )
-          (EffFn.EffFn1 ( frp :: FRP | eff ) a Unit)
-          (Eff ( frp :: FRP | eff ) Unit)
-    , push :: EffFn.EffFn1 ( frp :: FRP | eff ) a Unit
-    }
-subject' = do
-  subs <- noST emptySTArray
-  pure
-    { event: EffFn.mkEffFn1 \sub -> noST do
-        i <- pushSTArray subs sub
-        pure $ void $ noST do
-          pokeSTArray subs (i-1) noop
-    , push: EffFn.mkEffFn1 \a -> do
-        noST (unsafeFreeze subs) >>= traverse_ (EffFn.runEffFn1 <@> a)
-    }
-  where
-    noop = EffFn.mkEffFn1 (pure (pure unit))
-    -- Shh. You see nothing.
-    noST :: forall h e. Eff ( st :: ST h | e ) ~> Eff e
-    noST = unsafeCoerceEff
 
 behavioralComponent ::
   forall m all i o required partial behaviors eff ebehaviors callbacks internals other rl.
