@@ -2,6 +2,7 @@ module Halogen.Behavior.Internal where
 
 import Prelude
 
+import CSS (CSS, render, renderedInline)
 import Control.Monad.Eff (Eff)
 import Control.Monad.Eff.Ref (REF, Ref, newRef, readRef)
 import DOM (DOM)
@@ -17,6 +18,9 @@ import Halogen.VDom.Util as Util
 import Type.Row (class ListToRow, class RowLacks, class RowToList, Cons, Nil, RLProxy(..), kind RowList)
 import Unsafe.Coerce (unsafeCoerce)
 import Unsafe.Reference (unsafeRefEq)
+
+renderCSS :: CSS -> Maybe String
+renderCSS = renderedInline <<< render
 
 mapIProp :: forall attrs a b. (a -> b) -> IProp attrs a -> IProp attrs b
 mapIProp f (IProp p) = IProp (map f <$> p)
