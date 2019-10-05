@@ -2,26 +2,27 @@ module Halogen.Behavior.Internal.MultiAttrBehavior where
 
 import Prelude
 
-import Control.Monad.Eff (Eff)
-import Control.Monad.Eff.Ref (REF, Ref, modifyRef, readRef)
-import DOM (DOM)
-import DOM.Node.Types (Element)
-import Data.Function.Uncurried as Fn
+import Effect (Effect)
+import Effect.Ref (Ref, modify_, read)
+import Effect.Uncurried as EFn
 import Data.Maybe (Maybe(..))
-import Data.Record (delete, get, set)
+import Record (delete, get, set)
 import Data.Symbol (class IsSymbol, SProxy(..), reflectSymbol)
 import Data.Variant (Variant, case_, expand, inj, on)
-import FRP (FRP)
 import FRP.Behavior (ABehavior, Behavior, animate)
 import FRP.Event (Event)
 import Halogen.Behavior.Internal (class Nothings, class NothingsRL, eqMProp, removeProperty, setProperty)
 import Halogen.HTML (class IsProp)
 import Halogen.HTML.Core (Prop(..), toPropValue)
 import Halogen.HTML.Properties (IProp(..))
-import Type.Row (class ListToRow, class RowLacks, class RowToList, Cons, Nil, RLProxy(..), kind RowList)
+import Type.Row (RProxy(..))
+import Type.RowList (class ListToRow, RLProxy(..))
+import Prim.Row (class Union, class Lacks, class Cons)
+import Prim.RowList (kind RowList, Cons, Nil, class RowToList)
+import Web.DOM (Element)
 import Unsafe.Coerce (unsafeCoerce)
 
-type SubscribeCancel eff v = (v -> Eff eff Unit) -> Eff eff (Eff eff Unit)
+type SubscribeCancel v = (v -> Effect Unit) -> Effect (Effect Unit)
 
 class Nothings partial <= MultiAttrBehavior
   (required :: # Type) -- IsProp p => p
@@ -30,10 +31,10 @@ class Nothings partial <= MultiAttrBehavior
   | required -> partial behaviors
   , partial -> required behaviors
   where
-    subscribe :: forall e. Record behaviors -> SubscribeCancel ( frp :: FRP | e ) (Variant partial)
-    handle :: forall e. Element -> Variant partial -> Eff ( dom :: DOM | e ) Unit
+    subscribe :: forall e. Record behaviors -> SubscribeCancel (Variant partial)
+    handle :: forall e. Element -> Variant partial -> Effect Unit
     toProps :: forall i. Record partial -> Array (IProp required i)
-    shouldUpdate :: forall e. Ref (Record partial) -> Variant partial -> Eff ( ref :: REF | e ) Boolean
+    shouldUpdate :: forall e. Ref (Record partial) -> Variant partial -> Effect Boolean
 instance mab ::
   -- Use both RowToList and ListToRow for inference purposes
   ( RowToList required arl
@@ -68,10 +69,10 @@ class
   , prl -> arl brl
   , brl -> arl prl
   where
-    subscribeRL :: forall e. RLProxy arl -> Record behaviors -> SubscribeCancel ( frp :: FRP | e ) (Variant partial)
-    handleRL :: forall e. RLProxy arl -> Element -> Variant partial -> Eff ( dom :: DOM | e ) Unit
+    subscribeRL :: RLProxy arl -> Record behaviors -> SubscribeCancel (Variant partial)
+    handleRL :: RLProxy arl -> Element -> Variant partial -> Effect Unit
     toPropsRL :: forall i. RLProxy arl -> Record partial -> Array (IProp required i)
-    shouldUpdateRL :: forall e. RLProxy arl -> Ref (Record partial) -> Variant partial -> Eff ( ref :: REF | e ) Boolean
+    shouldUpdateRL :: RLProxy arl -> Ref (Record partial) -> Variant partial -> Effect Boolean
 instance mabNil :: MultiAttrBehaviorRL Nil Nil Nil () () () where
   subscribeRL _ {} cb = pure (pure unit)
   handleRL _ _ = case_
@@ -80,12 +81,12 @@ instance mabNil :: MultiAttrBehaviorRL Nil Nil Nil () () () where
 instance mabCons ::
   ( IsSymbol label
   , IsProp p
-  , RowLacks label required'
-  , RowLacks label partial'
-  , RowLacks label behaviors'
-  , RowCons label p required' required
-  , RowCons label (Maybe p) partial' partial
-  , RowCons label (Behavior (Maybe p)) behaviors' behaviors
+  , Lacks label required'
+  , Lacks label partial'
+  , Lacks label behaviors'
+  , Cons label p required' required
+  , Cons label (Maybe p) partial' partial
+  , Cons label (Behavior (Maybe p)) behaviors' behaviors
   , Union partial' one partial
   , RowToList required (Cons label p arl)
   -- , ListToRow (Cons label p arl) required
@@ -108,8 +109,8 @@ instance mabCons ::
         where k = SProxy :: SProxy label
       handleRL _ el = handleRL (RLProxy :: RLProxy arl) el
         # on k case _ of
-          Just v -> Fn.runFn3 setProperty propName (toPropValue v) el
-          Nothing -> Fn.runFn2 removeProperty propName el
+          Just v -> EFn.runEffectFn3 setProperty propName (toPropValue v) el
+          Nothing -> EFn.runEffectFn2 removeProperty propName el
         where
           k = (SProxy :: SProxy label)
           propName = reflectSymbol k # case _ of
@@ -127,10 +128,10 @@ instance mabCons ::
         where
           k = (SProxy :: SProxy label)
           handleThis = \v -> do
-            rec <- readRef ref
+            rec <- read ref
             if get k rec `eqMProp` v
               then pure false
               else do
-                modifyRef ref (set k v)
+                modify_ (set k v) ref
                 pure true
           handleOther = unsafeCoerce (shouldUpdateRL (RLProxy :: RLProxy arl)) ref

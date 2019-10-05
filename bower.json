@@ -7,14 +7,11 @@
     "output"
   ],
   "dependencies": {
-    "purescript-prelude": "^3.1.1",
-    "purescript-console": "^3.0.0",
-    "purescript-behaviors": "^6.1.0",
-    "purescript-halogen": "^3.0.1",
-    "purescript-halogen-css": "^7.0.0",
-    "purescript-variant": "^4.0.0"
-  },
-  "devDependencies": {
-    "purescript-psci-support": "^3.0.0"
+    "purescript-prelude": "^4.0.0",
+    "purescript-console": "^4.0.0",
+    "purescript-behaviors": "^8.0.0",
+    "purescript-halogen": "^5.0.0",
+    "purescript-halogen-css": "pbrant/purescript-halogen-css#update-dependencies",
+    "purescript-variant": "^6.0.0"
   }
 }

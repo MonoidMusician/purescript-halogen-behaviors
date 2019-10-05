@@ -7,48 +7,45 @@ import CSS.Common (normal)
 import CSS.Text.Transform (capitalize, textTransform)
 import Color.Scheme.Clrs (blue, green, purple, red)
 import Control.Apply (lift2)
-import Control.Monad.Aff.Class (class MonadAff)
-import Control.Monad.Eff (Eff)
-import Control.Monad.Eff.AVar (AVAR)
-import Control.Monad.Eff.Exception (EXCEPTION)
-import Control.Monad.Eff.Ref (REF)
-import Control.Monad.Except (runExcept)
+import Effect.Aff.Class (class MonadAff)
+import Effect (Effect)
 import Control.Monad.Maybe.Trans (MaybeT(..), runMaybeT)
 import Control.MonadZero (guard)
-import DOM (DOM)
-import DOM.Event.Event (target)
-import DOM.HTML.HTMLInputElement (value)
-import DOM.HTML.Types (htmlElementToElement, readHTMLInputElement)
 import Data.Bifunctor (bimap)
 import Data.Const (Const)
-import Data.Either.Nested (Either2)
 import Data.Foldable (for_)
-import Data.Foreign (toForeign)
-import Data.Functor.Coproduct.Nested (Coproduct2)
 import Data.Int (even, round)
 import Data.Maybe (Maybe(..))
 import Data.Set (size)
 import Data.Tuple (Tuple(..))
 import Data.Variant (Variant)
-import FRP (FRP)
 import FRP.Behavior (Behavior)
 import FRP.Behavior.Keyboard (key)
+import FRP.Event.Keyboard (getKeyboard)
 import FRP.Behavior.Mouse (buttons)
+import FRP.Event.Mouse (getMouse)
 import FRP.Behavior.Time (seconds)
 import Halogen (RefLabel(..))
 import Halogen as H
 import Halogen.Aff (awaitBody, runHalogenAff)
 import Halogen.Behavior.ElementBehaviors (class ElementBehaviors, allAttrs, mkBehaviors, update)
-import Halogen.Behavior.Internal (class Nothings, AroundState(..), initialize, mapIProp, renderCSS, snapshot, uninitializedAS)
-import Halogen.Behavior.Internal.MultiAttrBehavior (class MultiAttrBehavior, handle, shouldUpdate, subscribe, toProps)
-import Halogen.Component.ChildPath as CP
+import Halogen.Behavior.Internal (class Nothings, class NothingsRL, AroundState(..), initialize, mapIProp, renderCSS, snapshot, uninitializedAS)
+import Halogen.Behavior.Internal.MultiAttrBehavior (class MultiAttrBehavior, class MultiAttrBehaviorRL, handle, shouldUpdate, subscribe, toProps)
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
-import Halogen.Query.EventSource (eventSource')
+import Halogen.Query.EventSource as ES
 import Halogen.VDom.Driver (runUI)
 import Type.Row (RProxy(..))
+import Type.RowList (class ListToRow)
+import Prim.Row (class Union)
+import Prim.RowList (class RowToList)
 import Unsafe.Coerce (unsafeCoerce)
+import Web.HTML.HTMLElement (toElement) as HTMLElement
+import Web.HTML.HTMLInputElement as HTMLInputElement
+import Data.Symbol (SProxy(..))
+import Web.Event.Event (target)
+import Data.Newtype (unwrap)
 
 type State callbacks partial i =
   { value :: i
@@ -62,16 +59,12 @@ initialState =
   , pushers: Nothing
   }
 
-data Query internals partial i o a
-  = Initialize a
-  | Finalize a
-  | Receive i a
-  | Lift o a
-  | UpdateProp (Variant partial) a
-  | UpdateBehavior (Variant internals) a
+data Action internals partial o
+  = Lift o
+  | UpdateProp (Variant partial)
+  | UpdateBehavior (Variant internals)
 
-type SimpleHTML m o = HH.HTML (H.ComponentSlot HH.HTML (Const Void) m Void o) o
-type SimpleHTML1 m q = SimpleHTML m (q Unit)
+type SimpleHTML m o = H.ComponentHTML o () m
 
 -- | A Halogen component that allows using behaviors to style and set properties
 -- | on an element. Directly updates the DOM, to avoid rerenders. Uses
@@ -112,55 +105,62 @@ type SimpleHTML1 m q = SimpleHTML m (q Unit)
 -- | - `internals`: Just the internal value used by each element behavior.
 -- | - `eff`: Going to die in flames soon.
 behavioralParentComponent ::
-  forall g p m i o all required other behaviors partial ebehaviors callbacks internals eff.
-    MonadAff ( dom :: DOM, frp :: FRP, ref :: REF, avar :: AVAR | eff ) m =>
-    MultiAttrBehavior required partial behaviors =>
+  forall slots m i o all required other behaviors partial ebehaviors callbacks internals arl prl brl.
+    MonadAff m =>
     ElementBehaviors all ebehaviors callbacks internals =>
     Union required other all =>
-    Nothings partial =>
-    Ord p =>
+    RowToList required arl =>
+    ListToRow arl required =>
+    RowToList partial prl =>
+    ListToRow prl partial =>
+    RowToList behaviors brl =>
+    ListToRow brl behaviors =>
+    NothingsRL prl partial =>
+    MultiAttrBehavior required partial behaviors =>
+    MultiAttrBehaviorRL arl prl brl required partial behaviors =>
   (forall w q. HH.Node all w q) ->
-  (forall q.
-    (o -> q Unit) ->
+  (forall o'.
+    (o -> o') ->
     (
       Array (HH.IProp other o) ->
-      Array (HH.HTML (H.ComponentSlot HH.HTML g m p o) o) ->
-      H.ParentHTML q g p m
+      Array (HH.ComponentHTML o slots m) ->
+      HH.ComponentHTML o' slots m
     ) ->
     i ->
-    H.ParentHTML q g p m
+    HH.ComponentHTML o' slots m
   ) ->
   (
     Record ebehaviors ->
     Record behaviors
   ) ->
-  H.Component HH.HTML (Query internals partial i o) i o m
+  H.Component HH.HTML (Const Void) i o m
 behavioralParentComponent node renderWith behavior =
-  H.lifecycleParentComponent
-    { initialState
-    , receiver: HE.input Receive
-    , initializer: HE.input_ Initialize unit
-    , finalizer: HE.input_ Finalize unit
-    , render
+  H.mkComponent
+    { render
     , eval
+    , initialState:
+      { value: _
+      , as: (uninitializedAS :: AroundState partial)
+      , pushers: Nothing
+      }
     }
   where
     label = RefLabel "behavioral-component"
     addRefProps = ([HP.ref label] <> _)
     expand1 = unsafeCoerce :: (Array (HH.IProp other o) -> Array (HH.IProp (all) o))
     expand2 = unsafeCoerce :: (Array (HH.IProp required o) -> Array (HH.IProp (all) o))
-    events :: Array (H.IProp all (Query internals partial i o))
-    events = mapIProp (UpdateBehavior <@> unit) <$> allAttrs (RProxy :: RProxy ebehaviors)
-    lift1 :: o -> Query internals partial i o Unit
-    lift1 = Lift <@> unit
-    adapt :: HH.HTML (H.ComponentSlot HH.HTML g m p o) o -> H.ParentHTML (Query internals partial i o) g p m
+    events :: Array (HH.IProp all (Action internals partial o))
+    events = mapIProp UpdateBehavior <$> allAttrs (RProxy :: RProxy ebehaviors)
+    lift1 :: o -> Action internals partial o
+    lift1 = Lift
+    adapt :: HH.ComponentHTML o slots m -> HH.ComponentHTML (Action internals partial o) slots m
     adapt = bimap (map lift1) lift1
-    lifting :: Array (HH.IProp all o) -> Array (H.IProp all (Query internals partial i o))
+    lifting :: Array (HH.IProp all o) -> Array (HH.IProp all (Action internals partial o))
     lifting = map (mapIProp (lift1))
 
     -- Render the component. Delegates to the passed in renderer,
     -- lifts all communication from it.
-    render :: State callbacks partial i -> H.ParentHTML (Query internals partial i o) g p m
+    render :: State callbacks partial i -> HH.ComponentHTML (Action internals partial o) slots m
     render { value, as: (AroundState { insideState: latest }), pushers } =
       let
         props = addRefProps (toProps latest)
@@ -169,66 +169,77 @@ behavioralParentComponent node renderWith behavior =
           (adapt <$> children)
       in renderWith lift1 renderer value
 
-    eval :: Query internals partial i o ~> H.HalogenM (State callbacks partial i) (Query internals partial i o) g p o m
+    eval ::
+      H.HalogenQ (Const Void) (Action internals partial o) i ~>
+      H.HalogenM (State callbacks partial i) (Action internals partial o) slots o m
     -- Initialize the component.
-    eval (Initialize a) = a <$ do
+    eval (H.Initialize a) = a <$ do
       -- Run the finalizer, just in case ....
-      eval (Finalize unit)
+      eval (H.Finalize unit)
       -- Create a ref from the latest style
-      as <- H.gets _.as >>= initialize >>> H.liftEff
+      as <- H.gets _.as >>= initialize >>> H.liftEffect
       -- And store it in state!
-      H.modify (_ { as = as })
-      Tuple status pushers <- H.liftEff $ mkBehaviors (RProxy :: RProxy all)
-      H.modify (_ { pushers = Just pushers })
+      H.modify_ (_ { as = as })
+      Tuple status pushers <- H.liftEffect $ mkBehaviors (RProxy :: RProxy all)
+      H.modify_ (_ { pushers = Just pushers })
       -- Start animating the behavior
-      H.subscribe $ eventSource' (subscribe (behavior status))
-        (Just <<< (UpdateProp <@> H.Listening))
+      void $ H.subscribe $ ES.effectEventSource \e ->
+        ES.Finalizer <$> subscribe (behavior status) (ES.emit e <<< UpdateProp)
     -- Update for a new input for the renderer.
-    eval (Receive s a) = a <$ do
-      as <- H.gets _.as >>= snapshot >>> H.liftEff
-      H.modify (_ { value = s, as = as })
+    eval (H.Receive s a) = a <$ do
+      as <- H.gets _.as >>= snapshot >>> H.liftEffect
+      H.modify_ (_ { value = s, as = as })
     -- Destroy the component.
-    eval (Finalize a) = pure a
+    eval (H.Finalize a) = pure a
     -- Raise a query from the HTML to this component's output.
-    eval (Lift q a) = a <$ do
+    eval (H.Action (Lift q) a) = a <$ do
       H.raise q
     -- Secretely set the style directly on the element, update the reference.
     -- Should *not* write to state.
-    eval (UpdateProp mprop a) = a <$ runMaybeT do
+    eval (H.Action (UpdateProp mprop) a) = a <$ runMaybeT do
       -- Set the style directly on the DOM element
-      el <- htmlElementToElement <$> MaybeT (H.getHTMLElementRef label)
+      el <- HTMLElement.toElement <$> MaybeT (H.getHTMLElementRef label)
       ref <- MaybeT $ H.gets \{as: AroundState { outsideState }} -> outsideState
-      shouldupdate <- H.liftEff $ shouldUpdate ref mprop
+      shouldupdate <- H.liftEffect $ shouldUpdate ref mprop
       guard shouldupdate
-      H.liftEff $ handle el mprop
-    eval (UpdateBehavior which a) = a <$ runMaybeT do
+      H.liftEffect $ handle el mprop
+    eval (H.Action (UpdateBehavior which) a) = a <$ runMaybeT do
       pushers <- MaybeT $ H.gets _.pushers
-      H.liftEff $ update (RProxy :: RProxy ebehaviors) (RProxy :: RProxy all) pushers which
+      H.liftEffect $ update (RProxy :: RProxy ebehaviors) (RProxy :: RProxy all) pushers which
+    eval (H.Query _ f) = pure (f unit)
 
 -- | `behavioralParentComponent` but without the parent component stuff.
 behavioralComponent ::
-  forall m all i o required partial behaviors eff ebehaviors callbacks internals other rl.
-    MonadAff ( dom :: DOM, frp :: FRP, ref :: REF, avar :: AVAR | eff ) m =>
+  forall m all i o required partial behaviors ebehaviors callbacks internals other arl prl brl.
+    MonadAff m =>
     MultiAttrBehavior required partial behaviors =>
     ElementBehaviors all ebehaviors callbacks internals =>
     Union required other all =>
-    Nothings partial =>
+    RowToList required arl =>
+    ListToRow arl required =>
+    RowToList partial prl =>
+    ListToRow prl partial =>
+    RowToList behaviors brl =>
+    ListToRow brl behaviors =>
+    NothingsRL prl partial =>
+    MultiAttrBehavior required partial behaviors =>
+    MultiAttrBehaviorRL arl prl brl required partial behaviors =>
   (forall w q. HH.Node all w q) ->
-  (forall q.
-    (o -> q Unit) ->
+  (forall o'.
+    (o -> o') ->
     (
       Array (HH.IProp other o) ->
       Array (SimpleHTML m o) ->
-      SimpleHTML1 m q
+      SimpleHTML m o'
     ) ->
     i ->
-    SimpleHTML1 m q
+    SimpleHTML m o'
   ) ->
   (
     Record ebehaviors ->
     Record behaviors
   ) ->
-  H.Component HH.HTML (Query internals partial i o) i o m
+  H.Component HH.HTML (Const Void) i o m
 behavioralComponent = behavioralParentComponent
 
 -- | Combinator for adding CSS when a behavior returns `true`.
@@ -269,21 +280,14 @@ infixl 0 lifted as &
 styleB :: Behavior CSS -> { style :: Behavior (Maybe String) }
 styleB = { style: _ } <<< map renderCSS
 
-main :: forall e.
-  Eff
-    ( avar :: AVAR
-    , ref :: REF
-    , exception :: EXCEPTION
-    , dom :: DOM
-    , frp :: FRP
-    | e
-    )
-    Unit
-main = runHalogenAff $ awaitBody >>= runUI parent unit
-  where
-    pressed = buttons <#> size >>> (_ > 0)
-    blink = seconds <#> round >>> even
-    spacebar = key 32
+main :: Effect Unit
+main = do
+  keyboard <- getKeyboard
+  mouse <- getMouse
+  let
+    pressed = buttons mouse <#> size >>> (_ > 0)
+    blink = seconds <#> unwrap >>> round >>> even
+    spacebar = key keyboard "Space"
     b :: { hover :: Behavior Boolean } -> { "style" :: Behavior (Maybe String), "class" :: Behavior (Maybe String) }
     b { hover } =
       { "style": renderCSS <$>
@@ -304,19 +308,18 @@ main = runHalogenAff $ awaitBody >>= runUI parent unit
         else if h then red else black
       ) <$> focus <*> hover
     component2 = (behavioralComponent (\a _ -> HH.input a) <@> inputColor) \_ el v ->
-      el [ HP.value v, HE.onInput (HE.input Tuple) ] []
-    parent = H.parentComponent
+      el [ HP.value v, HE.onInput Just ] []
+    parent = H.mkComponent
       { render: \v ->
         HH.div_
-          [ HH.slot' cp_cp2 unit component2 v pure
-          , HH.slot' CP.cp1 unit component1 v absurd
+          [ HH.slot (SProxy :: SProxy "1") unit component2 v pure
+          , HH.slot (SProxy :: SProxy "2") unit component1 v absurd
           ]
-      , eval: \(Tuple e a) -> a <$ do
-          for_ (runExcept $ target e # toForeign # readHTMLInputElement)
-            (value >>> H.liftEff >=> H.put)
+      , eval: H.mkEval H.defaultEval
+        { handleAction = \e -> do
+            for_ (target e >>= HTMLInputElement.fromEventTarget)
+              (HTMLInputElement.value >>> H.liftEffect >=> H.put)
+        }
       , initialState: const help
-      , receiver: const Nothing
       }
-      where
-        -- Give a finite type to the slot
-        cp_cp2 = CP.cp2 :: forall f g a b. CP.ChildPath g (Coproduct2 f g) b (Either2 a b)
+  runHalogenAff $ awaitBody >>= runUI parent unit

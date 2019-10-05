@@ -2,40 +2,42 @@ module Halogen.Behavior.ElementBehaviors where
 
 import Prelude
 
-import Control.Monad.Eff (Eff)
-import Control.Monad.Eff.Unsafe (unsafeCoerceEff)
-import DOM.Event.Types (FocusEvent, MouseEvent)
+import Web.UIEvent.FocusEvent (FocusEvent)
+import Web.UIEvent.MouseEvent (MouseEvent)
+import Effect (Effect)
 import Data.Either (Either(..))
 import Data.Maybe (Maybe)
-import Data.Record (get)
-import Data.Record.Builder as B
+import Record (get)
+import Record.Builder as B
 import Data.Symbol (class IsSymbol, SProxy(..))
 import Data.Tuple (Tuple(..))
 import Data.Variant (class VariantMatchCases, Variant, case_, expand, inj, on)
-import FRP (FRP)
 import FRP.Behavior (ABehavior, Behavior, step, unfold)
 import FRP.Event (Event, create)
 import Halogen.Behavior.Internal (expandAttrs, mapIProp)
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties (IProp)
-import Type.Row (class ListToRow, class RowLacks, class RowToList, Cons, Nil, RLProxy(..), RProxy, kind RowList)
+import Type.Row (RProxy(..))
+import Type.RowList (class ListToRow, RLProxy(..))
+import Prim.Row (class Union, class Lacks, class Cons)
+import Prim.RowList (kind RowList, Cons, Nil, class RowToList)
 import Unsafe.Coerce (unsafeCoerce)
 
 class ElementBehaviors
   (attrs :: # Type)
   (behaviors :: # Type) -- Behavior t
-  (callbacks :: # Type) -- t -> Eff ( frp :: FRP )
+  (callbacks :: # Type) -- t -> Effect
   (internals :: # Type) -- t
   | behaviors -> callbacks internals
   where
-    mkBehaviors :: forall e. RProxy attrs -> Eff ( frp :: FRP | e )
+    mkBehaviors :: forall e. RProxy attrs -> Effect
       (Tuple (Record behaviors) (Record callbacks))
     update :: forall e.
       RProxy behaviors ->
       RProxy attrs ->
       Record callbacks ->
       Variant internals ->
-      Eff ( frp :: FRP | e ) Unit
+      Effect Unit
     allAttrs :: RProxy behaviors -> Array (IProp attrs (Variant internals))
 
 instance elementBehaviors ::
@@ -52,7 +54,7 @@ newtype Deletor r = Deletor (Record r)
 mkDeletor :: forall r. Record r -> Deletor r
 mkDeletor = Deletor
 
-split :: forall s t r' r. IsSymbol s => RowCons s t r' r => RowLacks s r' =>
+split :: forall s t r' r. IsSymbol s => Cons s t r' r => Lacks s r' =>
   SProxy s -> Deletor r -> Tuple t (Deletor r')
 split k d@(Deletor r) = Tuple (get k r) (unsafeCoerce d)
 
@@ -60,14 +62,14 @@ class ElementBehaviorsRL
   (attrs :: # Type)
   (rl :: RowList)
   (behaviors :: # Type) -- Behavior t
-  (callbacks :: # Type) -- t -> Eff ( frp :: FRP )
+  (callbacks :: # Type) -- t -> Effect
   (internals :: # Type) -- t
   | rl -> behaviors callbacks internals
   where
     initializeRL :: forall e.
       RLProxy rl ->
       RProxy attrs ->
-      Eff ( frp :: FRP | e )
+      Effect
         (Tuple
           (B.Builder {} { | behaviors })
           (B.Builder {} { | callbacks })
@@ -77,7 +79,7 @@ class ElementBehaviorsRL
       RProxy attrs ->
       Deletor callbacks ->
       Variant internals ->
-      Eff ( frp :: FRP | e ) Unit
+      Effect Unit
     attrsRL ::
       RLProxy rl ->
       Array (IProp attrs (Variant internals))
@@ -85,24 +87,24 @@ class ElementBehaviorsRL
 instance elementBehaviorsNil ::
   ElementBehaviorsRL attrs Nil () () ()
   where
-    initializeRL _ _ = pure (Tuple id id)
+    initializeRL _ _ = pure (Tuple identity identity)
     updateRL _ _ _ v = case_ v
     attrsRL _ = []
 
 instance elementBehaviorsCons ::
   ( ElementBehavior attrs' s t i
   , Union attrs' unused attrs
-  , RowCons s (Behavior t) behaviors' behaviors
-  , RowCons s (i -> Eff ( frp :: FRP ) Unit) callbacks' callbacks
-  , RowCons s i internals' internals
-  , RowLacks s behaviors'
-  , RowLacks s callbacks'
-  , RowLacks s internals'
+  , Cons s (Behavior t) behaviors' behaviors
+  , Cons s (i -> Effect Unit) callbacks' callbacks
+  , Cons s i internals' internals
+  , Lacks s behaviors'
+  , Lacks s callbacks'
+  , Lacks s internals'
   , RowToList behaviors (Cons s (ABehavior Event t) rl)
   , ListToRow (Cons s (ABehavior Event t) rl) behaviors
   , Union internals' whymustwehavethis internals
   , RowToList callbacks crl
-  , VariantMatchCases crl internals (Eff ( frp :: FRP ) Unit)
+  , VariantMatchCases crl internals (Effect Unit)
   , ElementBehaviorsRL attrs rl behaviors' callbacks' internals'
   ) => ElementBehaviorsRL attrs
     (Cons s (ABehavior Event t) rl)
@@ -114,10 +116,10 @@ instance elementBehaviorsCons ::
       let b = process s event
       pure $ Tuple
         (b' >>> B.insert s b)
-        (cb' >>> B.insert s (unsafeCoerceEff <<< cb))
+        (cb' >>> B.insert s cb)
       where s = SProxy :: SProxy s
     updateRL _ r cbs =
-      on s (unsafeCoerceEff <<< cb) $
+      on s cb $
         updateRL (RLProxy :: RLProxy rl) r cbs'
       where
         s = SProxy :: SProxy s

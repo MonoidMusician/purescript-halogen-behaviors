@@ -3,21 +3,23 @@ module Halogen.Behavior.Internal where
 import Prelude
 
 import CSS (CSS, render, renderedInline)
-import Control.Monad.Eff (Eff)
-import Control.Monad.Eff.Ref (REF, Ref, newRef, readRef)
-import DOM (DOM)
-import DOM.Node.Types (Element)
-import Data.Foreign (typeOf)
+import Effect (Effect)
+import Effect.Ref (Ref, new, read)
 import Data.Function.Uncurried as Fn
+import Effect.Uncurried as EFn
 import Data.Maybe (Maybe(..))
-import Data.Record (insert)
+import Record (insert)
+import Web.DOM (Element)
 import Data.Symbol (class IsSymbol, SProxy(..))
 import Halogen.HTML.Core (class IsProp, PropValue, toPropValue)
 import Halogen.HTML.Properties (IProp(..))
 import Halogen.VDom.Util as Util
-import Type.Row (class ListToRow, class RowLacks, class RowToList, Cons, Nil, RLProxy(..), kind RowList)
+import Type.RowList (class ListToRow, RLProxy(..))
+import Prim.Row (class Union, class Lacks, class Cons)
+import Prim.RowList (kind RowList, Cons, Nil, class RowToList)
 import Unsafe.Coerce (unsafeCoerce)
 import Unsafe.Reference (unsafeRefEq)
+import Foreign (typeOf)
 
 renderCSS :: CSS -> Maybe String
 renderCSS = renderedInline <<< render
@@ -55,8 +57,8 @@ instance nothingsNil :: NothingsRL Nil () where
   aWholeLotOfNothingRL _ = {}
 instance nothingsCons ::
   ( IsSymbol label
-  , RowCons label (Maybe ty) row' row
-  , RowLacks label row'
+  , Cons label (Maybe ty) row' row
+  , Lacks label row'
   , RowToList row (Cons label (Maybe ty) rl)
   , NothingsRL rl row'
   ) => NothingsRL (Cons label (Maybe ty) rl) row where
@@ -72,26 +74,27 @@ newtype AroundState partial = AroundState
 uninitializedAS :: forall partial. Nothings partial => AroundState partial
 uninitializedAS = AroundState { insideState: aWholeLotOfNothing, outsideState: Nothing }
 
-initialize :: forall partial eff. AroundState partial -> Eff ( ref :: REF | eff ) (AroundState partial)
+initialize :: forall partial. AroundState partial -> Effect (AroundState partial)
 initialize (AroundState { insideState }) =
-  newRef insideState <#>
+  new insideState <#>
     AroundState <<< { insideState, outsideState: _ } <<< Just
 
-snapshot :: forall partial eff. AroundState partial -> Eff ( ref :: REF | eff ) (AroundState partial)
+snapshot :: forall partial. AroundState partial -> Effect (AroundState partial)
 snapshot a@(AroundState { outsideState: Nothing }) = pure a
 snapshot (AroundState { outsideState: Just ref }) =
-  readRef ref <#> \insideState ->
+  read ref <#> \insideState ->
     AroundState { insideState, outsideState: Just ref }
 
 
-setProperty ∷ ∀ eff. Fn.Fn3 String PropValue Element (Eff ( dom ∷ DOM | eff) Unit)
+setProperty ∷ EFn.EffectFn3 String PropValue Element Unit
 setProperty = Util.unsafeSetAny
 
-unsafeGetProperty ∷ Fn.Fn2 String Element PropValue
-unsafeGetProperty = Util.unsafeGetAny
+unsafeGetProperty ∷ EFn.EffectFn2 String Element PropValue
+unsafeGetProperty = EFn.mkEffectFn2 \key el ->
+  pure (Fn.runFn2 Util.unsafeGetAny key el)
 
-removeProperty ∷ ∀ eff. Fn.Fn2 String Element (Eff ( dom ∷ DOM | eff) Unit)
-removeProperty = Fn.mkFn2 \key el →
+removeProperty ∷ EFn.EffectFn2 String Element Unit
+removeProperty = EFn.mkEffectFn2 \key el →
   case typeOf (Fn.runFn2 Util.unsafeGetAny key el) of
-    "string" → Fn.runFn3 Util.unsafeSetAny key "" el
-    _        → Fn.runFn3 Util.unsafeSetAny key Util.jsUndefined el
+    "string" → EFn.runEffectFn3 Util.unsafeSetAny key "" el
+    _        → EFn.runEffectFn3 Util.unsafeSetAny key Util.jsUndefined el
